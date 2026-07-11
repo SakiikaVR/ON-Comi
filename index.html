@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#ffffff">
+    <title>Media Library</title>
+
+    <!--
+      Media Library - オフラインで動作する漫画・音声・動画ライブラリ
+      Licensed under the MIT License. See LICENSE file.
+      Third-party licenses: see credit.html
+    -->
+
+    <script src="https://unpkg.com/@zip.js/zip.js@2.7.34/dist/zip.min.js"></script>
+    <script src="https://unpkg.com/dexie@4.0.8/dist/dexie.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+    <link rel="stylesheet" href="css/style.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/intersect@3.13.5/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+</head>
+<body x-data="app()" x-init="init()" x-cloak>
+
+    <div id="loading-overlay" x-show="loading.show" x-transition.opacity>
+        <div class="spinner"></div>
+        <div x-show="!loading.minimal" style="display:flex; flex-direction:column; align-items:center; width:100%;">
+            <div x-text="loading.text" style="font-size:18px; margin-bottom:5px;"></div>
+            <div style="width:200px; height:6px; background:#444; border-radius:3px; overflow:hidden;">
+                <div :style="'width:'+loading.progress+'%; height:100%; background:var(--primary-color);'"></div>
+            </div>
+            <div x-text="loading.subText" style="font-size:12px; margin-top:5px; opacity:0.8;"></div>
+        </div>
+    </div>
+
+    <div id="toast" :class="{'show': toast.show}" x-text="toast.message"></div>
+
+    <input type="file" id="bookInput" class="hidden-file-input" accept=".zip,.cbz,.pdf,application/zip,application/pdf" multiple @change="handleFile($event, 'book')">
+    <input type="file" id="audioInput" class="hidden-file-input" accept="audio/*,.zip,application/zip" multiple @change="handleFile($event, 'audio')">
+    <input type="file" id="coverInput" class="hidden-file-input" accept="image/*" @change="uploadCover($event)">
+
+    <div id="custom-prompt-modal" x-show="promptData.show" x-transition.opacity x-cloak>
+        <div class="custom-prompt-box">
+            <div class="custom-prompt-title" x-text="promptData.title"></div>
+            <input type="text" class="custom-prompt-input" x-model="promptData.inputValue" x-ref="promptInput" @keyup.enter="promptData.confirm()">
+            <div class="custom-prompt-actions">
+                <button class="custom-prompt-btn" @click="promptData.show = false">キャンセル</button>
+                <button class="custom-prompt-btn" @click="promptData.confirm()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="video-modal" x-show="videoPlayer.show" x-cloak>
+        <div class="video-close" @click="closeVideo()">✕</div>
+        <video id="main-video" x-ref="videoRef" controls autoplay playsinline @ended="onVideoEnded"></video>
+    </div>
+
+    <div id="selection-bar" x-show="selectionMode" x-transition>
+        <button class="action-btn" @click="exitSelectionMode()">
+            <svg viewBox="0 0 24 24" class="svg-icon"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            キャンセル
+        </button>
+        <button class="action-btn" @click="selectAll()">
+            <svg viewBox="0 0 24 24" class="svg-icon"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+            全選択
+        </button>
+
+        <button class="action-btn" x-show="page === 'home'" @click="openToList()">
+            <svg viewBox="0 0 24 24" class="svg-icon"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+            リストへ
+        </button>
+
+        <button class="action-btn primary" @click="openEditModal()">
+            <svg viewBox="0 0 24 24" class="svg-icon"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+            編集
+        </button>
+        <button class="action-btn delete" @click="deleteSelectedItems()">
+            <svg viewBox="0 0 24 24" class="svg-icon"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            削除
+        </button>
+    </div>
+
+    <div id="home" class="page" :class="{'active': page==='home'}">
+        <div class="sticky-header">
+            <h1>
+                <span>ライブラリ</span>
+                <div @click="showAddMenu=true; triggerAnim($el, 'pulse')" style="color:var(--primary-color); cursor:pointer; padding:5px; display:flex; align-items:center;">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </div>
+            </h1>
+            <div class="search-container"><input type="text" x-model="searchQuery" class="search-input" placeholder="検索..."></div>
+            <div class="filter-row">
+                <div class="filter-chip" :class="{'active': filter==='all'}" @click="filter='all'">すべて</div>
+                <div class="filter-chip" :class="{'active': filter==='book'}" @click="filter='book'">漫画</div>
+                <div class="filter-chip" :class="{'active': filter==='audio'}" @click="filter='audio'">音声/動画</div>
+            </div>
+        </div>
+        <div class="library-grid" :class="gridClass">
+            <template x-for="item in filteredLibrary" :key="item.id">
+                <div class="item-card" :class="{'selected': selectedIds.includes(item.id)}"
+                     @click="handleClick(item)" @contextmenu.prevent="enterSelect(item.id)"
+                     @touchstart="touchStart(item.id)" @touchend="touchEnd()" @touchmove="touchEnd()"
+                     @mousedown="touchStart(item.id)" @mouseup="touchEnd()" @mouseleave="touchEnd()">
+                    <div class="item-thumb-area">
+                        <template x-if="item.hasThumb">
+                            <img class="item-thumb-img"
+                                 :class="{'loaded': !!thumbnails[item.id]}"
+                                 x-intersect.once="loadThumb(item.id)"
+                                 :src="thumbnails[item.id] || ''">
+                        </template>
+                        <template x-if="!item.hasThumb"><div x-html="ICONS[item.type==='book'?'book':'audio']" style="opacity:0.5; color:var(--icon-color);"></div></template>
+                        <div class="adult-badge" x-show="item.isAdult">R18</div>
+                    </div>
+                    <div class="selection-check" x-show="selectedIds.includes(item.id)">✓</div>
+                    <div class="item-info">
+                        <div class="item-title" x-text="item.title"></div>
+                        <div class="item-author" x-text="item.author"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <div id="edit-modal" class="modal-overlay" x-show="editModal.show" x-cloak>
+        <div class="modal-content">
+            <div class="modal-header"><span x-text="editModal.isBatch ? '一括編集 ('+selectedIds.length+'件)' : '編集'"></span><button @click="editModal.show=false">✕</button></div>
+            <div class="modal-body">
+                <div class="form-group" x-show="!editModal.isBatch">
+                    <label>タイトル</label>
+                    <input type="text" class="form-input" x-model="editModal.title">
+                </div>
+                <div class="form-group">
+                    <label>作者 <span x-show="editModal.isBatch" style="font-size:10px; color:#888;">(空白で維持)</span></label>
+                    <input type="text" class="form-input" x-model="editModal.author" :placeholder="editModal.isBatch ? '変更しない場合は空欄' : ''">
+                </div>
+                <div class="form-group" x-show="!editModal.isBatch">
+                    <label>表紙画像</label>
+                    <div class="cover-preview-container">
+                        <img :src="editModal.tempThumb || thumbnails[editModal.id] || ''" class="current-cover">
+                        <div class="cover-actions">
+                            <button class="action-btn" @click="document.getElementById('coverInput').click()">画像アップロード</button>
+                            <button class="action-btn" x-show="editModal.type==='book'" @click="openCoverSelector()">ページから選択</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group" x-show="!editModal.isBatch">
+                    <label style="display:flex;align-items:center;gap:5px;">
+                        <input type="checkbox" x-model="editModal.isAdult"> 成人向け (R-18)
+                    </label>
+                </div>
+
+                <div class="form-group" x-show="editModal.isBatch">
+                    <label>成人向けタグ設定</label>
+                    <select class="form-input" x-model="editModal.batchAdultMode">
+                        <option value="no_change">変更しない</option>
+                        <option value="true">成人向け (R-18) にする</option>
+                        <option value="false">一般 (全年齢) にする</option>
+                    </select>
+                </div>
+
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" @click="editModal.show=false">キャンセル</button>
+                <button class="btn-primary" @click="saveEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="cover-selector-modal" class="modal-overlay" x-show="coverSelector.show" x-cloak>
+        <div class="modal-content" style="height: 80vh;">
+            <div class="modal-header">表紙を選択<button @click="coverSelector.show=false">✕</button></div>
+            <div style="flex:1; overflow-y:auto; padding:5px;">
+                <div x-show="coverSelector.loading" style="text-align:center; padding:20px;">読み込み中...</div>
+                <template x-for="file in coverSelector.images">
+                    <div class="list-option" @click="previewCover(file)">
+                        <div x-text="file.filename" style="font-size:12px; overflow:hidden; text-overflow:ellipsis;"></div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <div id="reels" class="page" :class="{'active': page==='reels', 'viewer-mode': currentItem}">
+        <div id="empty-state" x-show="!currentItem">
+            <div x-html="ICONS.folder" style="width:48px;height:48px;"></div><div>コンテンツ未選択</div>
+        </div>
+        <div id="book-viewer-container" x-show="currentItem?.type==='book'" @click="onViewerClick($event)">
+            <div id="book-progress-container">
+                <div id="book-progress-fill" :style="{ width: ((viewerPage/(viewerTotal-1 || 1))*100) + '%', left: settings.direction === 'rtl' ? 'auto' : '0', right: settings.direction === 'rtl' ? '0' : 'auto' }"></div>
+                <input type="range" id="book-seek-bar" x-model="viewerPage" :max="viewerTotal-1" :dir="settings.direction === 'rtl' ? 'rtl' : 'ltr'" @input="seekViewer($event.target.value)">
+                <template x-for="m in currentItem?.bookmarks || []"><div class="bookmark-marker" :style="getMarkerStyle(m)"></div></template>
+            </div>
+            <div id="page-indicator" x-text="(viewerPage+1)+' / '+viewerTotal"></div>
+            <button id="viewer-menu-btn" @click.stop="showViewerMenu=true"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
+            <div class="swiper" id="main-swiper"><div class="swiper-wrapper"></div></div>
+        </div>
+        <div id="audio-browser-ui" x-show="currentItem?.type==='audio' || currentItem?.type==='album'">
+            <div class="album-header">
+                <button @click="audioBack()" class="back-btn"><svg viewBox="0 0 24 24" class="svg-icon"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></button>
+                <div class="album-title-area"><h2 x-text="currentItem?.title"></h2><p x-text="currentItem?.author || '不明'"></p></div>
+            </div>
+            <div id="file-list">
+                <div x-show="audioFiles.length === 0" style="padding:40px;text-align:center;color:var(--sub-text-color);">フォルダは空です</div>
+                <template x-for="f in audioFiles" :key="f.full">
+                    <div class="file-row" :class="{'playing':currentTrack===f.full}" @click="playAudioFile(f)">
+                        <div class="file-icon" :class="f.type" x-html="getIcon(f)"></div>
+                        <div class="file-name" x-text="f.name"></div>
+                    </div>
+                </template>
+            </div>
+            <div id="sticky-player">
+                <div class="player-status" x-text="currentTrackName || '停止中'"></div>
+                <div class="progress-container">
+                    <span x-text="fmtTime(audioTime)">0:00</span>
+                    <input type="range" id="seek-bar" :value="sliderTime" :max="audioDuration || 1" @input="isDragging=true; sliderTime=$event.target.value" @change="seekAudio($event.target.value)">
+                    <span x-text="fmtTime(audioDuration)">0:00</span>
+                </div>
+                <div class="player-controls">
+                    <button class="ctrl-btn sub-ctrl-btn" :class="{'active':repeatMode!==0}" @click="toggleRepeat()">
+                         <template x-if="repeatMode===0"><svg viewBox="0 0 24 24" class="svg-icon"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg></template>
+                         <template x-if="repeatMode===1"><svg viewBox="0 0 24 24" class="svg-icon"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg></template>
+                         <template x-if="repeatMode===2"><svg viewBox="0 0 24 24" class="svg-icon"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path><text x="12" y="16" font-size="8" text-anchor="middle" fill="currentColor" font-weight="bold">1</text></svg></template>
+                    </button>
+                    <button @click="prevTrack()" class="ctrl-btn"><svg viewBox="0 0 24 24" class="svg-icon-fill" style="width:28px;height:28px;"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5" stroke-width="4" stroke-linecap="round"></line></svg></button>
+                    <button @click="togglePlay()" class="play-btn">
+                        <svg x-show="!playing" viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        <svg x-show="playing" viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                    </button>
+                    <button @click="nextTrack()" class="ctrl-btn"><svg viewBox="0 0 24 24" class="svg-icon-fill" style="width:28px;height:28px;"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke-width="4" stroke-linecap="round"></line></svg></button>
+                    <button class="ctrl-btn sub-ctrl-btn" :class="{'active':isShuffle}" @click="toggleShuffle()"><svg viewBox="0 0 24 24" class="svg-icon"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="lists" class="page" :class="{'active': page==='lists'}">
+        <div class="sticky-header">
+            <h1><span x-text="currentList ? currentList.title : 'リスト'"></span><button x-show="currentList" @click="currentList=null" style="background:none;border:none;font-size:24px;color:var(--primary-color)">←</button></h1>
+        </div>
+        <div x-show="!currentList" style="padding:20px;">
+            <template x-for="l in lists" :key="l.id">
+                <div class="list-option" @click="currentList=l">
+                    <div x-html="ICONS.folder"></div>
+                    <div style="flex:1"><div x-text="l.title" style="font-weight:bold;"></div><div x-text="l.items.length+' 作品'" style="font-size:12px;color:gray;"></div></div>
+                </div>
+            </template>
+        </div>
+        <div x-show="currentList" class="library-grid" :class="gridClass">
+            <template x-for="item in getListItems()" :key="item.id">
+                <div class="item-card" :class="{'selected': selectedIds.includes(item.id)}"
+                     @click="handleClick(item)" @contextmenu.prevent="enterSelect(item.id)"
+                     @touchstart="touchStart(item.id)" @touchend="touchEnd()" @touchmove="touchEnd()"
+                     @mousedown="touchStart(item.id)" @mouseup="touchEnd()" @mouseleave="touchEnd()">
+                     <div class="item-thumb-area">
+                         <template x-if="item.hasThumb"><img class="item-thumb-img" :class="{'loaded': !!thumbnails[item.id]}" x-intersect.once="loadThumb(item.id)" :src="thumbnails[item.id] || ''"></template>
+                         <template x-if="!item.hasThumb"><div x-html="ICONS[item.type==='book'?'book':'audio']" style="opacity:0.5; color:var(--icon-color);"></div></template>
+                         <div class="adult-badge" x-show="item.isAdult">R18</div>
+                     </div>
+                     <div class="selection-check" x-show="selectedIds.includes(item.id)">✓</div>
+                     <div class="item-info">
+                         <div class="item-title" x-text="item.title"></div>
+                         <div class="item-author" x-text="item.author"></div>
+                     </div>
+                </div>
+            </template>
+            <div style="text-align:right; padding:20px;"><button @click="deleteList()" style="color:var(--danger-color);border:none;background:none;">リスト削除</button></div>
+        </div>
+        <button class="fab-btn" x-show="!currentList && page==='lists'" @click="createList(); triggerAnim($el, 'pulse')">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+        </button>
+    </div>
+
+    <div id="profile" class="page" :class="{'active': page==='profile'}">
+        <div class="content-padding">
+            <div class="settings-header"><h1>設定</h1></div>
+            <div class="storage-container"><div class="storage-info" x-text="storageSize"></div><div class="storage-sub">現在のデータ使用量</div></div>
+            <div class="settings-group"><h3>表示設定</h3><div class="settings-card">
+                <div class="settings-row"><div class="settings-label">成人向け作品を表示</div><label class="switch"><input type="checkbox" x-model="settings.showAdult"><span class="slider"></span></label></div>
+                <div class="settings-row"><div class="settings-label">ダークモード</div><label class="switch"><input type="checkbox" x-model="settings.darkMode"><span class="slider"></span></label></div>
+                <div class="settings-row"><div class="settings-label">サムネイルサイズ</div><div class="settings-value-display" x-text="getLabel(settings.thumbSize)"></div><select class="full-width-select" x-model="settings.thumbSize"><option value="small">小</option><option value="medium">中</option><option value="large">大</option></select></div>
+                <div class="settings-row"><div class="settings-label">アクセントカラー</div><div class="settings-value-display" x-text="getColorName(settings.accentColor)"></div>
+                    <select class="full-width-select" x-model="settings.accentColor"><option value="#0095f6">ブルー</option><option value="#ff75a0">ピンク</option><option value="#ff3b30">レッド</option><option value="#ff9500">オレンジ</option></select>
+                </div>
+            </div></div>
+            <div class="settings-group"><h3>漫画ビューアー</h3><div class="settings-card">
+                 <div class="settings-row"><div class="settings-label">スクロール設定</div><div class="settings-value-display" x-text="getLabel(settings.scrollMode)"></div><select class="full-width-select" x-model="settings.scrollMode"><option value="horizontal">スワイプ</option><option value="vertical">縦スクロール</option></select></div>
+                 <div class="settings-row"><div class="settings-label">読む方向</div><div class="settings-value-display" x-text="getLabel(settings.direction)"></div><select class="full-width-select" x-model="settings.direction"><option value="rtl">右 → 左</option><option value="ltr">左 → 右</option></select></div>
+                 <div class="settings-row"><div class="settings-label">見開き表示 (横画面)</div><label class="switch"><input type="checkbox" x-model="settings.doublePage"><span class="slider"></span></label></div>
+            </div></div>
+            <div class="settings-group"><h3>データ管理</h3><div class="settings-card">
+                <div class="settings-row" @click="deleteAll()"><div class="settings-label" style="color:var(--danger-color)">全データ削除</div></div>
+            </div></div>
+
+            <div class="settings-group">
+                <h3>情報</h3>
+                <div class="settings-card">
+                    <div class="settings-row" @click="window.location.href='credit.html'">
+                        <div class="settings-label">オープンソースライセンス</div>
+                        <div style="color:var(--sub-text-color); font-size:18px; font-weight:bold;">›</div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <div id="add-menu-modal" class="popup-overlay" x-show="showAddMenu" @click="showAddMenu=false">
+        <div class="popup-menu" id="add-menu-content">
+            <div class="list-option" @click="document.getElementById('bookInput').click()"><div x-html="ICONS.book" style="width:20px;"></div>漫画を追加</div>
+            <div class="list-option" @click="document.getElementById('audioInput').click()"><div x-html="ICONS.audio" style="width:20px;"></div>音声/動画を追加</div>
+        </div>
+    </div>
+
+    <div id="viewer-menu-modal" class="popup-overlay" x-show="showViewerMenu" @click="showViewerMenu=false">
+        <div class="popup-menu" id="viewer-menu-content">
+            <div class="list-option" @click="toggleBookmark()"><span x-text="hasBookmark() ? 'しおりを削除' : 'しおりを追加'"></span></div>
+            <div class="list-option" @click="openBookmarks()">しおり一覧</div>
+        </div>
+    </div>
+    <div id="bookmarks-modal" class="modal-overlay" x-show="showBookmarksModal" @click="showBookmarksModal=false">
+        <div class="modal-content" style="max-height:50vh;">
+            <div class="modal-header">しおり<button @click="showBookmarksModal=false">✕</button></div>
+            <template x-for="p in currentItem?.bookmarks"><div class="list-option" x-text="(p+1)+' ページ'" @click="jumpTo(p)"></div></template>
+        </div>
+    </div>
+    <div id="list-select-modal" class="modal-overlay" x-show="showListSelect" @click="showListSelect=false">
+        <div class="modal-content"><div class="modal-header">リスト選択</div>
+            <template x-for="l in lists"><div class="list-option" x-text="l.title" @click="addSelectedToList(l)"></div></template>
+        </div>
+    </div>
+
+    <div id="text-viewer-modal" class="modal-overlay" x-show="textViewer.show" @click="textViewer.show=false" x-transition.opacity>
+        <div class="modal-content" @click.stop style="width:90%; max-width:600px; height:80vh;">
+            <div class="modal-header"><span x-text="textViewer.title"></span><button @click="textViewer.show=false">✕</button></div>
+            <div style="flex:1; overflow-y:auto; padding:5px;"><div id="text-content" x-text="textViewer.content"></div></div>
+        </div>
+    </div>
+    <div id="image-viewer-modal" class="modal-overlay" x-show="imageViewer.show" @click="imageViewer.show=false" x-transition.opacity>
+        <div class="modal-content" style="background:transparent; box-shadow:none; border:none; width:100%; height:100%; display:flex; align-items:center; justify-content:center; padding:0;" @click.stop="imageViewer.show=false">
+            <img :src="imageViewer.src" style="max-width:100%; max-height:100%; object-fit:contain; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+        </div>
+    </div>
+
+    <nav class="bottom-nav" x-show="!selectionMode">
+        <div class="nav-item" :class="{'active':page==='home'}" @click="page='home'"><div x-html="ICONS.book" style="width:24px;"></div><span>ホーム</span></div>
+        <div class="nav-item" :class="{'active':page==='reels'}" @click="page='reels'"><svg viewBox="0 0 24 24" fill="currentColor" width="24"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>再生</span></div>
+        <div class="nav-item" :class="{'active':page==='lists'}" @click="page='lists'"><div x-html="ICONS.folder" style="width:24px;"></div><span>リスト</span></div>
+        <div class="nav-item" :class="{'active':page==='profile'}" @click="page='profile'"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg><span>設定</span></div>
+    </nav>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
