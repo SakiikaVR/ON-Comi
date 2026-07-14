@@ -1,4 +1,4 @@
-# ONコミ！
+# オンコミ！
 
 端末内のフォルダを直接読み込む、完全オフラインの漫画・音声・動画ライブラリアプリです。
 [MedjedBuilder -メジェドビルダー-](https://github.com/Xenoah/html2apk) でそのまま **Android アプリ (APK)** にできます。
