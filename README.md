@@ -4,6 +4,12 @@
 [MedjedBuilder -メジェドビルダー-](https://github.com/Xenoah/html2apk) でそのまま **Android アプリ (APK)** にできます。
 ファイルのアップロードは一切行わず、データはすべて端末内で完結します。
 
+## スクリーンショット
+
+| ライト | ダーク |
+|:---:|:---:|
+| ![ライトモード](docs/screenshot-light.png) | ![ダークモード](docs/screenshot-dark.png) |
+
 ## 使い方
 
 1. 初回起動時に「フォルダを選択」で、本や音声・動画を入れたフォルダを選ぶ
