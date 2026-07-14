@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#ffffff">
     <title>Media Library</title>
 
@@ -10,20 +10,23 @@
       Media Library - オフラインで動作する漫画・音声・動画ライブラリ
       Licensed under the MIT License. See LICENSE file.
       Third-party licenses: see credit.html
+      すべてのライブラリは lib/ にローカル同梱 (APK内でオフライン動作させるため)
     -->
 
-    <script src="https://unpkg.com/@zip.js/zip.js@2.7.34/dist/zip.min.js"></script>
-    <script src="https://unpkg.com/dexie@4.0.8/dist/dexie.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="lib/zip.min.js"></script>
+    <script src="lib/dexie.min.js"></script>
+    <script src="lib/lodash.min.js"></script>
+    <script src="lib/howler.min.js"></script>
+    <script src="lib/pdf.min.js"></script>
+    <!-- file:// (APK) では Web Worker が使えないため、workerを通常スクリプトとして先読みする -->
+    <script src="lib/pdf.worker.min.js"></script>
 
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+    <link rel="stylesheet" href="lib/swiper-bundle.min.css" />
     <link rel="stylesheet" href="css/style.css">
 
-    <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/intersect@3.13.5/dist/cdn.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+    <script src="lib/swiper-bundle.min.js"></script>
+    <script defer src="lib/alpine-intersect.min.js"></script>
+    <script defer src="lib/alpine.min.js"></script>
 </head>
 <body x-data="app()" x-init="init()" x-cloak>
 
@@ -40,8 +43,6 @@
 
     <div id="toast" :class="{'show': toast.show}" x-text="toast.message"></div>
 
-    <input type="file" id="bookInput" class="hidden-file-input" accept=".zip,.cbz,.pdf,application/zip,application/pdf" multiple @change="handleFile($event, 'book')">
-    <input type="file" id="audioInput" class="hidden-file-input" accept="audio/*,.zip,application/zip" multiple @change="handleFile($event, 'audio')">
     <input type="file" id="coverInput" class="hidden-file-input" accept="image/*" @change="uploadCover($event)">
 
     <div id="custom-prompt-modal" x-show="promptData.show" x-transition.opacity x-cloak>
@@ -89,10 +90,10 @@
         <div class="sticky-header">
             <h1>
                 <span>ライブラリ</span>
-                <div @click="showAddMenu=true; triggerAnim($el, 'pulse')" style="color:var(--primary-color); cursor:pointer; padding:5px; display:flex; align-items:center;">
-                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                <div x-show="folderReady" @click="scanLibrary(false); triggerAnim($el, 'pulse')" title="再スキャン" style="color:var(--primary-color); cursor:pointer; padding:5px; display:flex; align-items:center;">
+                    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
                     </svg>
                 </div>
             </h1>
@@ -103,7 +104,16 @@
                 <div class="filter-chip" :class="{'active': filter==='audio'}" @click="filter='audio'">音声/動画</div>
             </div>
         </div>
-        <div class="library-grid" :class="gridClass">
+        <div id="folder-setup" x-show="!folderReady">
+            <div x-html="ICONS.folder" class="folder-setup-icon"></div>
+            <div class="folder-setup-title">読み込むフォルダを選択してください</div>
+            <div class="folder-setup-desc">選択したフォルダ内の PDF / ZIP / CBZ / 音声 / 動画 が自動でライブラリに表示されます。</div>
+            <button class="btn-primary folder-setup-btn" @click="selectFolder(false)">フォルダを選択</button>
+        </div>
+        <div x-show="folderReady && library.length === 0 && !scanning" class="folder-empty-msg">
+            フォルダ内に対応ファイル (PDF / ZIP / CBZ / 音声 / 動画) が見つかりませんでした。
+        </div>
+        <div class="library-grid" :class="gridClass" x-show="folderReady">
             <template x-for="item in filteredLibrary" :key="item.id">
                 <div class="item-card" :class="{'selected': selectedIds.includes(item.id)}"
                      @click="handleClick(item)" @contextmenu.prevent="enterSelect(item.id)"
@@ -285,7 +295,12 @@
     <div id="profile" class="page" :class="{'active': page==='profile'}">
         <div class="content-padding">
             <div class="settings-header"><h1>設定</h1></div>
-            <div class="storage-container"><div class="storage-info" x-text="storageSize"></div><div class="storage-sub">現在のデータ使用量</div></div>
+            <div class="storage-container"><div class="storage-info" x-text="storageSize"></div><div class="storage-sub">キャッシュ使用量 (サムネイル・PDF変換)</div></div>
+            <div class="settings-group"><h3>読み込みフォルダ</h3><div class="settings-card">
+                <div class="settings-row"><div class="settings-label">フォルダ</div><div class="settings-value-display" x-text="getFolderModeLabel()"></div></div>
+                <div class="settings-row" @click="selectFolder(true)"><div class="settings-label" style="color:var(--primary-color)">フォルダを選択 / 変更</div></div>
+                <div class="settings-row" @click="folderReady ? scanLibrary(false) : selectFolder(false)"><div class="settings-label">再スキャン</div></div>
+            </div></div>
             <div class="settings-group"><h3>表示設定</h3><div class="settings-card">
                 <div class="settings-row"><div class="settings-label">成人向け作品を表示</div><label class="switch"><input type="checkbox" x-model="settings.showAdult"><span class="slider"></span></label></div>
                 <div class="settings-row"><div class="settings-label">ダークモード</div><label class="switch"><input type="checkbox" x-model="settings.darkMode"><span class="slider"></span></label></div>
@@ -300,7 +315,9 @@
                  <div class="settings-row"><div class="settings-label">見開き表示 (横画面)</div><label class="switch"><input type="checkbox" x-model="settings.doublePage"><span class="slider"></span></label></div>
             </div></div>
             <div class="settings-group"><h3>データ管理</h3><div class="settings-card">
-                <div class="settings-row" @click="deleteAll()"><div class="settings-label" style="color:var(--danger-color)">全データ削除</div></div>
+                <div class="settings-row" @click="clearCache()"><div class="settings-label">キャッシュ削除</div></div>
+                <div class="settings-row" @click="runDiagnostics()"><div class="settings-label">接続診断 (フォルダが選択できないとき)</div></div>
+                <div class="settings-row" @click="deleteAll()"><div class="settings-label" style="color:var(--danger-color)">アプリデータを初期化</div></div>
             </div></div>
 
             <div class="settings-group">
@@ -313,13 +330,6 @@
                 </div>
             </div>
 
-        </div>
-    </div>
-
-    <div id="add-menu-modal" class="popup-overlay" x-show="showAddMenu" @click="showAddMenu=false">
-        <div class="popup-menu" id="add-menu-content">
-            <div class="list-option" @click="document.getElementById('bookInput').click()"><div x-html="ICONS.book" style="width:20px;"></div>漫画を追加</div>
-            <div class="list-option" @click="document.getElementById('audioInput').click()"><div x-html="ICONS.audio" style="width:20px;"></div>音声/動画を追加</div>
         </div>
     </div>
 

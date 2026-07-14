@@ -226,3 +226,26 @@ body.dark-mode .play-btn { background: #fff; color: #000; }
 #empty-state { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--sub-text-color); font-size: 14px; font-weight: bold; opacity: 0.5; }
 
 #text-content { white-space: pre-wrap; font-family: monospace; font-size: 14px; line-height: 1.6; padding: 10px; background: var(--input-bg); border-radius: 8px; color: var(--text-color); }
+
+/* Safe Area (エッジtoエッジ端末・ノッチ対応。通常時は env() が 0 なので影響なし) */
+body { padding-bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px)); }
+.sticky-header { padding-top: env(safe-area-inset-top, 0px); }
+.bottom-nav { height: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px)); padding-bottom: env(safe-area-inset-bottom, 0px); }
+#selection-bar { height: calc(var(--selection-bar-height) + env(safe-area-inset-bottom, 0px)); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.page { height: calc(100vh - var(--nav-height) - env(safe-area-inset-bottom, 0px)); }
+#profile .content-padding { padding-top: env(safe-area-inset-top, 0px); }
+#book-progress-container { top: env(safe-area-inset-top, 0px); }
+#page-indicator { top: calc(35px + env(safe-area-inset-top, 0px)); }
+#viewer-menu-btn { top: calc(35px + env(safe-area-inset-top, 0px)); }
+.album-header { padding-top: calc(10px + env(safe-area-inset-top, 0px)); }
+#sticky-player { height: calc(var(--player-height) + env(safe-area-inset-bottom, 0px)); padding-bottom: calc(15px + env(safe-area-inset-bottom, 0px)); }
+#video-modal .video-close { top: calc(20px + env(safe-area-inset-top, 0px)); }
+
+/* Folder Setup (first launch) */
+#folder-setup { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 60px 30px; gap: 12px; }
+.folder-setup-icon { width: 64px; height: 64px; color: var(--folder-color); opacity: 0.9; }
+.folder-setup-icon svg { width: 64px; height: 64px; }
+.folder-setup-title { font-size: 17px; font-weight: bold; }
+.folder-setup-desc { font-size: 13px; color: var(--sub-text-color); line-height: 1.6; max-width: 320px; }
+.folder-setup-btn { margin-top: 10px; padding: 12px 32px; font-size: 15px; border-radius: 24px; cursor: pointer; }
+.folder-empty-msg { padding: 40px 30px; text-align: center; color: var(--sub-text-color); font-size: 13px; line-height: 1.6; }

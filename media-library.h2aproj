@@ -1,0 +1,28 @@
+{
+  "web_root": "C:\\Users\\taket\\Desktop\\oncomi",
+  "output_apk": "C:\\Users\\taket\\Desktop\\MediaLibrary.apk",
+  "icon": null,
+  "signing_key": null,
+  "config": {
+    "app_name": "Media Library",
+    "package_id": "io.oncomi.medialibrary",
+    "version_name": "1.0.0",
+    "version_code": 1,
+    "start_page": "index.html",
+    "orientation": "auto",
+    "fullscreen": false,
+    "keep_screen_on": false,
+    "open_external_links": true,
+    "allow_cleartext_http": false,
+    "storage": "saf",
+    "internet": false,
+    "camera": false,
+    "microphone": false,
+    "location": false,
+    "notifications": false,
+    "file_api": true,
+    "status_bar_color": "#000000",
+    "navigation_bar_color": "#000000"
+  },
+  "format": "apk"
+}
