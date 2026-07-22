@@ -2,6 +2,13 @@
 
 <p align="center"><img src="assets/icon.png" alt="オンコミ" width="128"></p>
 
+<p align="center">
+  <a href="https://github.com/SakiikaVR/ON-Comi/releases/latest/download/oncomi.apk">
+    <img src="https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20APK%E3%82%92%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-%E3%82%AA%E3%83%B3%E3%82%B3%E3%83%9F%20v2.0.0-7bb3d7?style=for-the-badge" alt="APKをダウンロード">
+  </a>
+</p>
+
+
 ブラウザだけで動く、完全オフライン保存型の漫画・音声・動画ライブラリアプリです。
 すべてのデータは端末内（IndexedDB / localStorage）に保存され、サーバーへのアップロードは一切行いません。
 ライブラリもすべてローカル同梱のため、初回表示からインターネット接続不要で動作します。
@@ -47,6 +54,12 @@
 - アクセントカラー変更（ブルー / ピンク / レッド / オレンジ）
 - サムネイルサイズ変更（小 / 中 / 大）
 - ストレージ使用量の表示、全データ削除
+
+## インストール（Android）
+
+上の**ダウンロードボタン**から `oncomi.apk` を端末に保存し、タップしてインストールしてください
+（「提供元不明のアプリ」の許可が必要な場合があります）。
+起動後にホームの「フォルダを選択」で漫画・音声を入れたフォルダを選ぶだけで使えます。
 
 ## 使い方（ブラウザ）
 
