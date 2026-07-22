@@ -3,27 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#ffffff">
-    <title>Media Library</title>
+    <meta name="theme-color" content="#000000">
+    <title>オンコミ</title>
+    <link rel="icon" href="assets/icon.png">
 
     <!--
-      Media Library - オフラインで動作する漫画・音声・動画ライブラリ
+      オンコミ - オフラインで動作する漫画・音声・動画ライブラリ
       Licensed under the MIT License. See LICENSE file.
       Third-party licenses: see credit.html
     -->
 
-    <script src="https://unpkg.com/@zip.js/zip.js@2.7.34/dist/zip.min.js"></script>
-    <script src="https://unpkg.com/dexie@4.0.8/dist/dexie.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="lib/zip.min.js"></script>
+    <script src="lib/dexie.min.js"></script>
+    <script src="lib/lodash.min.js"></script>
+    <script src="lib/howler.min.js"></script>
+    <script src="lib/pdf.min.js"></script>
 
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+    <link rel="stylesheet" href="lib/swiper-bundle.min.css" />
     <link rel="stylesheet" href="css/style.css">
 
-    <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/intersect@3.13.5/dist/cdn.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+    <script src="lib/swiper-bundle.min.js"></script>
+    <script defer src="lib/alpine-intersect.min.js"></script>
+    <script defer src="lib/alpine.min.js"></script>
 </head>
 <body x-data="app()" x-init="init()" x-cloak>
 
@@ -41,16 +42,47 @@
     <div id="toast" :class="{'show': toast.show}" x-text="toast.message"></div>
 
     <input type="file" id="bookInput" class="hidden-file-input" accept=".zip,.cbz,.pdf,application/zip,application/pdf" multiple @change="handleFile($event, 'book')">
-    <input type="file" id="audioInput" class="hidden-file-input" accept="audio/*,.zip,application/zip" multiple @change="handleFile($event, 'audio')">
+    <input type="file" id="audioInput" class="hidden-file-input" accept="audio/*,video/*,.zip,application/zip" multiple @change="handleFile($event, 'audio')">
     <input type="file" id="coverInput" class="hidden-file-input" accept="image/*" @change="uploadCover($event)">
 
-    <div id="custom-prompt-modal" x-show="promptData.show" x-transition.opacity x-cloak>
-        <div class="custom-prompt-box">
-            <div class="custom-prompt-title" x-text="promptData.title"></div>
-            <input type="text" class="custom-prompt-input" x-model="promptData.inputValue" x-ref="promptInput" @keyup.enter="promptData.confirm()">
-            <div class="custom-prompt-actions">
-                <button class="custom-prompt-btn" @click="promptData.show = false">キャンセル</button>
-                <button class="custom-prompt-btn" @click="promptData.confirm()">OK</button>
+    <div id="custom-prompt-modal" class="alert-overlay" x-show="promptData.show" x-transition.opacity x-cloak>
+        <div class="ios-alert">
+            <div class="ios-alert-body">
+                <div class="ios-alert-title" x-text="promptData.title"></div>
+                <input type="text" class="ios-alert-input" x-model="promptData.inputValue" x-ref="promptInput" @keyup.enter="promptData.confirm()">
+            </div>
+            <div class="ios-alert-actions">
+                <button class="ios-alert-btn" @click="promptData.show = false">キャンセル</button>
+                <button class="ios-alert-btn confirm" @click="promptData.confirm()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="custom-confirm-modal" class="alert-overlay" x-show="confirmData.show" x-transition.opacity x-cloak>
+        <div class="ios-alert">
+            <div class="ios-alert-body">
+                <div class="ios-alert-title" x-text="confirmData.title"></div>
+                <div class="ios-alert-msg" x-show="confirmData.message" x-text="confirmData.message"></div>
+            </div>
+            <div class="ios-alert-actions">
+                <button class="ios-alert-btn" @click="confirmData.show=false">キャンセル</button>
+                <button class="ios-alert-btn confirm" :class="{'danger': confirmData.danger}" @click="confirmData.show=false; confirmData.onConfirm && confirmData.onConfirm()" x-text="confirmData.okText"></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="action-sheet-overlay" x-show="sheetData.show" x-transition.opacity x-cloak @click="sheetData.show=false">
+        <div class="action-sheet" @click.stop>
+            <div class="action-sheet-group">
+                <div class="action-sheet-title" x-show="sheetData.title" x-text="sheetData.title"></div>
+                <template x-for="(a, i) in sheetData.actions" :key="i">
+                    <button class="action-sheet-btn" :class="{'danger': a.danger, 'active': a.active}" @click="runSheetAction(a)">
+                        <span x-text="a.label"></span><span class="sheet-check" x-show="a.active">✓</span>
+                    </button>
+                </template>
+            </div>
+            <div class="action-sheet-group">
+                <button class="action-sheet-btn action-sheet-cancel" @click="sheetData.show=false">キャンセル</button>
             </div>
         </div>
     </div>
@@ -88,15 +120,18 @@
     <div id="home" class="page" :class="{'active': page==='home'}">
         <div class="sticky-header">
             <h1>
-                <span>ライブラリ</span>
-                <div @click="showAddMenu=true; triggerAnim($el, 'pulse')" style="color:var(--primary-color); cursor:pointer; padding:5px; display:flex; align-items:center;">
+                <span>オンコミ</span>
+                <button class="icon-btn" x-show="!hasBridge" @click="showAddMenu=true; triggerAnim($el, 'pulse')">
                     <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="12" y1="5" x2="12" y2="19"></line>
                         <line x1="5" y1="12" x2="19" y2="12"></line>
                     </svg>
-                </div>
+                </button>
             </h1>
-            <div class="search-container"><input type="text" x-model="searchQuery" class="search-input" placeholder="検索..."></div>
+            <div class="search-container">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input type="text" x-model="searchQuery" class="search-input" placeholder="タイトル・作者で検索">
+            </div>
             <div class="filter-row">
                 <div class="filter-chip" :class="{'active': filter==='all'}" @click="filter='all'">すべて</div>
                 <div class="filter-chip" :class="{'active': filter==='book'}" @click="filter='book'">漫画</div>
@@ -104,6 +139,25 @@
             </div>
         </div>
         <div class="library-grid" :class="gridClass">
+            <div class="empty-library" x-show="library.length===0 && folderScanning">
+                <div class="spinner" style="margin:0;"></div>
+                <p>フォルダをスキャン中...</p>
+            </div>
+            <div class="empty-library" x-show="library.length===0 && !folderScanning">
+                <div x-html="ICONS.book"></div>
+                <p>ライブラリは空です</p>
+                <template x-if="hasBridge">
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                        <span x-show="!folderGranted">端末のフォルダを選ぶと、中の漫画や音声・動画がすべて表示されます</span>
+                        <span x-show="folderGranted">選択したフォルダに対応ファイル (ZIP / CBZ / PDF / 音声 / 動画) がありません</span>
+                        <button class="btn-primary" style="flex:none; padding:12px 26px;" @click="selectFolder()" x-text="folderGranted ? 'フォルダを変更' : 'フォルダを選択'"></button>
+                    </div>
+                </template>
+                <span x-show="!hasBridge">右上の「＋」から漫画や音声・動画を追加できます</span>
+            </div>
+            <div class="empty-library" x-show="library.length>0 && filteredLibrary.length===0">
+                <p>該当する作品がありません</p>
+            </div>
             <template x-for="item in filteredLibrary" :key="item.id">
                 <div class="item-card" :class="{'selected': selectedIds.includes(item.id)}"
                      @click="handleClick(item)" @contextmenu.prevent="enterSelect(item.id)"
@@ -160,11 +214,10 @@
 
                 <div class="form-group" x-show="editModal.isBatch">
                     <label>成人向けタグ設定</label>
-                    <select class="form-input" x-model="editModal.batchAdultMode">
-                        <option value="no_change">変更しない</option>
-                        <option value="true">成人向け (R-18) にする</option>
-                        <option value="false">一般 (全年齢) にする</option>
-                    </select>
+                    <div class="form-input picker-field" @click="openBatchAdultPicker()">
+                        <span x-text="getBatchAdultLabel()"></span>
+                        <span class="settings-chevron">›</span>
+                    </div>
                 </div>
 
             </div>
@@ -196,7 +249,7 @@
         <div id="book-viewer-container" x-show="currentItem?.type==='book'" @click="onViewerClick($event)">
             <div id="book-progress-container">
                 <div id="book-progress-fill" :style="{ width: ((viewerPage/(viewerTotal-1 || 1))*100) + '%', left: settings.direction === 'rtl' ? 'auto' : '0', right: settings.direction === 'rtl' ? '0' : 'auto' }"></div>
-                <input type="range" id="book-seek-bar" x-model="viewerPage" :max="viewerTotal-1" :dir="settings.direction === 'rtl' ? 'rtl' : 'ltr'" @input="seekViewer($event.target.value)">
+                <input type="range" id="book-seek-bar" :value="viewerPage" :max="viewerTotal-1" :dir="settings.direction === 'rtl' ? 'rtl' : 'ltr'" @input="seekViewer($event.target.value)">
                 <template x-for="m in currentItem?.bookmarks || []"><div class="bookmark-marker" :style="getMarkerStyle(m)"></div></template>
             </div>
             <div id="page-indicator" x-text="(viewerPage+1)+' / '+viewerTotal"></div>
@@ -218,10 +271,21 @@
                 </template>
             </div>
             <div id="sticky-player">
-                <div class="player-status" x-text="currentTrackName || '停止中'"></div>
+                <div class="player-now">
+                    <div class="player-art">
+                        <template x-if="currentItem && thumbnails[currentItem.id]"><img :src="thumbnails[currentItem.id]"></template>
+                        <template x-if="!(currentItem && thumbnails[currentItem.id])"><div x-html="ICONS.audio"></div></template>
+                    </div>
+                    <div class="player-meta">
+                        <div class="player-status" x-text="currentTrackName || '再生していません'"></div>
+                        <div class="player-sub" x-text="currentTrackName ? (currentItem?.title || '') : '曲を選んで再生'"></div>
+                    </div>
+                </div>
                 <div class="progress-container">
                     <span x-text="fmtTime(audioTime)">0:00</span>
-                    <input type="range" id="seek-bar" :value="sliderTime" :max="audioDuration || 1" @input="isDragging=true; sliderTime=$event.target.value" @change="seekAudio($event.target.value)">
+                    <input type="range" id="seek-bar" :value="sliderTime" :max="audioDuration || 1"
+                           :style="'--p:'+(audioDuration ? (sliderTime/audioDuration*100) : 0)+'%'"
+                           @input="isDragging=true; sliderTime=$event.target.value" @change="seekAudio($event.target.value)">
                     <span x-text="fmtTime(audioDuration)">0:00</span>
                 </div>
                 <div class="player-controls">
@@ -244,13 +308,41 @@
 
     <div id="lists" class="page" :class="{'active': page==='lists'}">
         <div class="sticky-header">
-            <h1><span x-text="currentList ? currentList.title : 'リスト'"></span><button x-show="currentList" @click="currentList=null" style="background:none;border:none;font-size:24px;color:var(--primary-color)">←</button></h1>
+            <h1>
+                <span style="display:flex; align-items:center; gap:4px; min-width:0; flex:1;">
+                    <button class="icon-btn" x-show="currentList" @click="currentList=null"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg></button>
+                    <span x-text="currentList ? currentList.title : 'リスト'" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+                </span>
+                <button class="icon-btn" x-show="!currentList" @click="createList(); triggerAnim($el, 'pulse')">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                </button>
+                <button class="icon-btn" x-show="currentList" @click="openListActions(currentList)">
+                    <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+                </button>
+            </h1>
         </div>
-        <div x-show="!currentList" style="padding:20px;">
+        <div x-show="!currentList" class="list-collection">
+            <div class="empty-library" x-show="lists.length===0">
+                <div x-html="ICONS.folder"></div>
+                <p>リストがありません</p>
+                <span>右上の「＋」からお気に入りリストを作成できます</span>
+            </div>
             <template x-for="l in lists" :key="l.id">
-                <div class="list-option" @click="currentList=l">
-                    <div x-html="ICONS.folder"></div>
-                    <div style="flex:1"><div x-text="l.title" style="font-weight:bold;"></div><div x-text="l.items.length+' 作品'" style="font-size:12px;color:gray;"></div></div>
+                <div class="list-row"
+                     @click="handleListClick(l)" @contextmenu.prevent="openListActions(l)"
+                     @touchstart="listTouchStart(l)" @touchend="listTouchEnd()" @touchmove="listTouchEnd()"
+                     @mousedown="listTouchStart(l)" @mouseup="listTouchEnd()" @mouseleave="listTouchEnd()">
+                    <div class="list-cover-stack">
+                        <template x-if="getListCoverIds(l).length===0"><div class="list-cover-empty" x-html="ICONS.folder"></div></template>
+                        <template x-for="(cid, i) in getListCoverIds(l)" :key="cid">
+                            <img class="list-cover" :class="'c'+i" x-intersect.once="loadThumb(cid)" :src="thumbnails[cid] || ''">
+                        </template>
+                    </div>
+                    <div class="list-row-info">
+                        <div class="list-row-title" x-text="l.title"></div>
+                        <div class="list-row-count" x-text="l.items.length + ' 作品'"></div>
+                    </div>
+                    <div class="settings-chevron">›</div>
                 </div>
             </template>
         </div>
@@ -272,35 +364,34 @@
                      </div>
                 </div>
             </template>
-            <div style="text-align:right; padding:20px;"><button @click="deleteList()" style="color:var(--danger-color);border:none;background:none;">リスト削除</button></div>
+            <div class="empty-library" x-show="getListItems().length===0">
+                <div x-html="ICONS.folder"></div>
+                <p>リストに作品がありません</p>
+                <span>ホームで作品を長押し →「リストへ」で追加できます</span>
+            </div>
         </div>
-        <button class="fab-btn" x-show="!currentList && page==='lists'" @click="createList(); triggerAnim($el, 'pulse')">
-            <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg>
-        </button>
     </div>
 
     <div id="profile" class="page" :class="{'active': page==='profile'}">
         <div class="content-padding">
             <div class="settings-header"><h1>設定</h1></div>
-            <div class="storage-container"><div class="storage-info" x-text="storageSize"></div><div class="storage-sub">現在のデータ使用量</div></div>
+            <div class="storage-container"><div class="storage-info" x-text="storageSize"></div><div class="storage-sub">キャッシュ使用量</div></div>
+            <div class="settings-group" x-show="hasBridge"><h3>ライブラリフォルダ</h3><div class="settings-card">
+                <div class="settings-row" @click="selectFolder()"><div class="settings-label">フォルダを選択 / 変更</div><div class="settings-chevron">›</div></div>
+                <div class="settings-row" @click="scanFolder(); showToast('再スキャンしています...')"><div class="settings-label">再スキャン</div><div class="settings-chevron">›</div></div>
+            </div></div>
             <div class="settings-group"><h3>表示設定</h3><div class="settings-card">
                 <div class="settings-row"><div class="settings-label">成人向け作品を表示</div><label class="switch"><input type="checkbox" x-model="settings.showAdult"><span class="slider"></span></label></div>
-                <div class="settings-row"><div class="settings-label">ダークモード</div><label class="switch"><input type="checkbox" x-model="settings.darkMode"><span class="slider"></span></label></div>
-                <div class="settings-row"><div class="settings-label">サムネイルサイズ</div><div class="settings-value-display" x-text="getLabel(settings.thumbSize)"></div><select class="full-width-select" x-model="settings.thumbSize"><option value="small">小</option><option value="medium">中</option><option value="large">大</option></select></div>
-                <div class="settings-row"><div class="settings-label">アクセントカラー</div><div class="settings-value-display" x-text="getColorName(settings.accentColor)"></div>
-                    <select class="full-width-select" x-model="settings.accentColor"><option value="#0095f6">ブルー</option><option value="#ff75a0">ピンク</option><option value="#ff3b30">レッド</option><option value="#ff9500">オレンジ</option></select>
-                </div>
+                <div class="settings-row" @click="openPicker('thumbSize')"><div class="settings-label">サムネイルサイズ</div><div class="settings-value-display" x-text="getLabel(settings.thumbSize)"></div><div class="settings-chevron">›</div></div>
+                <div class="settings-row" @click="openPicker('accentColor')"><div class="settings-label">アクセントカラー</div><div class="settings-value-display" x-text="getColorName(settings.accentColor)"></div><div class="settings-chevron">›</div></div>
             </div></div>
             <div class="settings-group"><h3>漫画ビューアー</h3><div class="settings-card">
-                 <div class="settings-row"><div class="settings-label">スクロール設定</div><div class="settings-value-display" x-text="getLabel(settings.scrollMode)"></div><select class="full-width-select" x-model="settings.scrollMode"><option value="horizontal">スワイプ</option><option value="vertical">縦スクロール</option></select></div>
-                 <div class="settings-row"><div class="settings-label">読む方向</div><div class="settings-value-display" x-text="getLabel(settings.direction)"></div><select class="full-width-select" x-model="settings.direction"><option value="rtl">右 → 左</option><option value="ltr">左 → 右</option></select></div>
+                 <div class="settings-row" @click="openPicker('scrollMode')"><div class="settings-label">スクロール設定</div><div class="settings-value-display" x-text="getLabel(settings.scrollMode)"></div><div class="settings-chevron">›</div></div>
+                 <div class="settings-row" @click="openPicker('direction')"><div class="settings-label">読む方向</div><div class="settings-value-display" x-text="getLabel(settings.direction)"></div><div class="settings-chevron">›</div></div>
                  <div class="settings-row"><div class="settings-label">見開き表示 (横画面)</div><label class="switch"><input type="checkbox" x-model="settings.doublePage"><span class="slider"></span></label></div>
             </div></div>
             <div class="settings-group"><h3>データ管理</h3><div class="settings-card">
-                <div class="settings-row" @click="deleteAll()"><div class="settings-label" style="color:var(--danger-color)">全データ削除</div></div>
+                <div class="settings-row" @click="deleteAll()"><div class="settings-label" style="color:var(--danger-color)">キャッシュと全データを削除</div></div>
             </div></div>
 
             <div class="settings-group">
@@ -308,7 +399,7 @@
                 <div class="settings-card">
                     <div class="settings-row" @click="window.location.href='credit.html'">
                         <div class="settings-label">オープンソースライセンス</div>
-                        <div style="color:var(--sub-text-color); font-size:18px; font-weight:bold;">›</div>
+                        <div class="settings-chevron">›</div>
                     </div>
                 </div>
             </div>
@@ -335,9 +426,19 @@
             <template x-for="p in currentItem?.bookmarks"><div class="list-option" x-text="(p+1)+' ページ'" @click="jumpTo(p)"></div></template>
         </div>
     </div>
-    <div id="list-select-modal" class="modal-overlay" x-show="showListSelect" @click="showListSelect=false">
-        <div class="modal-content"><div class="modal-header">リスト選択</div>
-            <template x-for="l in lists"><div class="list-option" x-text="l.title" @click="addSelectedToList(l)"></div></template>
+    <div id="list-select-modal" class="modal-overlay" x-show="showListSelect" x-cloak @click="showListSelect=false">
+        <div class="modal-content" @click.stop>
+            <div class="modal-header">リストに追加<button @click="showListSelect=false">✕</button></div>
+            <template x-for="l in lists" :key="l.id">
+                <div class="list-option" @click="addSelectedToList(l)">
+                    <div x-html="ICONS.folder" style="color:var(--folder-color); display:flex;"></div>
+                    <div style="flex:1; min-width:0;"><div x-text="l.title" style="font-weight:600;"></div><div x-text="l.items.length + ' 作品'" style="font-size:12px; color:var(--sub-text-color); margin-top:1px;"></div></div>
+                </div>
+            </template>
+            <div class="list-option" @click="createListAndAdd()">
+                <div style="color:var(--primary-color); display:flex;"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+                <div style="color:var(--primary-color); font-weight:600;">新しいリスト...</div>
+            </div>
         </div>
     </div>
 

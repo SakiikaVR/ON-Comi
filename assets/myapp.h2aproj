@@ -1,0 +1,29 @@
+{
+  "web_root": "C:\\Users\\taket\\Desktop\\オンコミ",
+  "output_apk": "C:\\Users\\taket\\Desktop\\オンコミ.apk",
+  "icon": "C:\\Users\\taket\\Desktop\\オンコミ\\assets\\icon.png",
+  "signing_key": null,
+  "config": {
+    "app_name": "オンコミ",
+    "package_id": "com.medjedbuilder.myapp",
+    "version_name": "1.0.0",
+    "version_code": 1,
+    "start_page": "index.html",
+    "orientation": "auto",
+    "fullscreen": false,
+    "keep_screen_on": false,
+    "open_external_links": true,
+    "allow_cleartext_http": false,
+    "storage": "saf",
+    "internet": false,
+    "camera": false,
+    "microphone": false,
+    "location": false,
+    "notifications": false,
+    "file_api": true,
+    "disable_splash": true,
+    "status_bar_color": "#000000",
+    "navigation_bar_color": "#000000"
+  },
+  "format": "apk"
+}
