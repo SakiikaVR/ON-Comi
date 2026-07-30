@@ -621,6 +621,8 @@ input:checked + .slider:before { transform: translateX(20px); }
     align-items: center; justify-content: center; gap: 10px;
     color: var(--sub-text-color); font-size: 14px; font-weight: 600; opacity: 0.55;
 }
+#empty-state > div:first-child { display: flex; align-items: center; justify-content: center; }
+#empty-state .svg-icon, #empty-state .svg-icon-fill { width: 48px; height: 48px; }
 
 #text-content {
     white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

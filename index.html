@@ -176,11 +176,10 @@
                      @click="handleClick(item)" @contextmenu.prevent="enterSelect(item.id)"
                      @touchstart="touchStart(item.id)" @touchend="touchEnd()" @touchmove="touchEnd()"
                      @mousedown="touchStart(item.id)" @mouseup="touchEnd()" @mouseleave="touchEnd()">
-                    <div class="item-thumb-area">
+                    <div class="item-thumb-area" x-intersect.once="loadThumb(item.id)">
                         <template x-if="item.hasThumb">
                             <img class="item-thumb-img"
                                  :class="{'loaded': !!thumbnails[item.id]}"
-                                 x-intersect.once="loadThumb(item.id)"
                                  :src="thumbnails[item.id] || ''">
                         </template>
                         <template x-if="!item.hasThumb"><div x-html="ICONS[item.type==='book'?'book':'audio']" style="opacity:0.5; color:var(--icon-color);"></div></template>
@@ -365,8 +364,8 @@
                      @click="handleClick(item)" @contextmenu.prevent="enterSelect(item.id)"
                      @touchstart="touchStart(item.id)" @touchend="touchEnd()" @touchmove="touchEnd()"
                      @mousedown="touchStart(item.id)" @mouseup="touchEnd()" @mouseleave="touchEnd()">
-                     <div class="item-thumb-area">
-                         <template x-if="item.hasThumb"><img class="item-thumb-img" :class="{'loaded': !!thumbnails[item.id]}" x-intersect.once="loadThumb(item.id)" :src="thumbnails[item.id] || ''"></template>
+                     <div class="item-thumb-area" x-intersect.once="loadThumb(item.id)">
+                         <template x-if="item.hasThumb"><img class="item-thumb-img" :class="{'loaded': !!thumbnails[item.id]}" :src="thumbnails[item.id] || ''"></template>
                          <template x-if="!item.hasThumb"><div x-html="ICONS[item.type==='book'?'book':'audio']" style="opacity:0.5; color:var(--icon-color);"></div></template>
                          <div class="adult-badge" x-show="item.isAdult">R18</div>
                      </div>

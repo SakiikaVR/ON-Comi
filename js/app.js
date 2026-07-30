@@ -353,7 +353,7 @@ document.addEventListener('alpine:init', () => {
         promptData: { show:false, title:'', inputValue:'', onConfirm:null, confirm() { if(this.inputValue.trim()) { this.onConfirm(this.inputValue.trim()); } this.show=false; this.inputValue=''; } },
         confirmData: { show:false, title:'', message:'', okText:'OK', danger:false, onConfirm:null },
         sheetData: { show:false, title:'', actions:[] },
-        storageSize: '計算中...', currentItem:null, currentList:null,
+        storageSize: '', currentItem:null, currentList:null,
         hasBridge:false, folderGranted:false, folderScanning:false,
         thumbnails: {},
         viewerPage:0, viewerTotal:0, swiper:null,
@@ -741,15 +741,13 @@ document.addEventListener('alpine:init', () => {
 
         async handleClick(item) { if(this.ignoreClick) return; if(this.selectionMode) { this.selectedIds = _.xor(this.selectedIds, [item.id]); } else { this.openItem(item); } },
         async openItem(item) {
-            this.loading.show = true;
             this.currentItem = item;
 
+            // 音声/動画は目次読みだけで開けるためオーバーレイを出さない。漫画のみ最小スピナー
             if (item.type === 'book') {
+                this.loading.show = true;
                 this.loading.minimal = true;
                 this.loading.text = '';
-            } else {
-                this.loading.minimal = false;
-                this.loading.text = "読み込み中...";
             }
 
             try {
@@ -1616,7 +1614,9 @@ document.addEventListener('alpine:init', () => {
         getColorName(c) { const map = {'#7bb3d7':'ブルー','#ff75a0':'ピンク','#ff453a':'レッド','#ff9f0a':'オレンジ'}; return map[c] || c; },
 
         async calculateStorageUsage() {
-            this.storageSize = "計算中..."; let total = 0;
+            // 前回の値を残したまま裏で再計算する (「計算中...」のちらつきを出さない)
+            if (!this.storageSize || this.storageSize === "計算中...") this.storageSize = "";
+            let total = 0;
             await db.files.each(val => { if (val instanceof Blob) total += val.size; else if (val.zipBlob) total += val.zipBlob.size; else if(val.pdfBlob) total += val.pdfBlob.size; });
             if (total === 0) { this.storageSize = "0 MB"; return; }
             const k = 1024; const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(total) / Math.log(k));
