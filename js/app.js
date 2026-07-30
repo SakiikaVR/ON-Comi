@@ -556,6 +556,7 @@ document.addEventListener('alpine:init', () => {
                     this._allAudioEntries = es;
                     this.renderAudioDir("");
                     this._audioAlbum = item;
+                    this.cacheAlbumTracks();
                 }
                 this.page = 'reels';
             } else if(ext === 'pdf') {
@@ -605,6 +606,8 @@ document.addEventListener('alpine:init', () => {
             }
 
             try {
+                this._albumCacheToken = (this._albumCacheToken || 0) + 1;
+                this._trackCache = {};
                 if(this._openSrcReader) {
                     await this._openSrcReader.dispose();
                     this._openSrcReader = null;
@@ -643,6 +646,7 @@ document.addEventListener('alpine:init', () => {
                         this._openZipReader = r;
                         this._allAudioEntries = es;
                         this.renderAudioDir("");
+                        this.cacheAlbumTracks();
                     } else if(data instanceof Blob) {
                         // ZIPではない単体の音声/動画ファイル
                         this._allAudioEntries = [];
@@ -829,6 +833,31 @@ document.addEventListener('alpine:init', () => {
             this.renderAudioDir(p.length > 0 ? p.join('/') + '/' : "");
         },
 
+        // 音声アルバムの全トラックを裏で展開キャッシュし、どのトラックを選んでも即再生できるようにする
+        async cacheAlbumTracks() {
+            const token = this._albumCacheToken = (this._albumCacheToken || 0) + 1;
+            const reader = this._openSrcReader;
+            const entries = _.filter(this._allAudioEntries || [],
+                e => !e.directory && MEDIA_REGEX.test(e.filename) && !VIDEO_REGEX.test(e.filename));
+            this._trackCache = {};
+            if(entries.length === 0) return;
+            if(reader) {
+                try {
+                    // 全体の先読み完了を待ってから展開する (ファイルを二重に読まない)
+                    await reader.init();
+                    if(reader._blobPromise) await reader._blobPromise;
+                } catch(e) { return; }
+            }
+            for(const entry of entries) {
+                if(token !== this._albumCacheToken) return;
+                if(this._trackCache[entry.filename]) continue;
+                try {
+                    const blob = await entry.getData(new zip.BlobWriter());
+                    if(token !== this._albumCacheToken) return;
+                    this._trackCache[entry.filename] = blob;
+                } catch(e) {}
+            }
+        },
         async playAudioFile(f) {
             if(f.type === 'folder') { this.renderAudioDir(f.full); return; }
             if(f.type === 'file_image') { this.viewImage(f); return; }
@@ -843,7 +872,9 @@ document.addEventListener('alpine:init', () => {
                     // 選択フォルダー内ファイルのcontent URIをそのまま再生 (コピー転送なし)
                     url = f.url;
                 } else {
-                    const b = f.blob || await f.entry.getData(new zip.BlobWriter());
+                    const cached = (f.entry && this._trackCache) ? this._trackCache[f.entry.filename] : null;
+                    const b = f.blob || cached || await f.entry.getData(new zip.BlobWriter());
+                    if(f.entry && this._trackCache && !this._trackCache[f.entry.filename]) this._trackCache[f.entry.filename] = b;
                     url = URL.createObjectURL(b);
                     this._trackUrl = url;
                 }
