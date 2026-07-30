@@ -179,6 +179,110 @@ class SakiikaRandomReader extends zip.Reader {
     }
 }
 
+/* ================================================================
+   プログレッシブ展開 — 先頭だけ展開して即再生し、続きは同じストリームで
+   最後まで展開する。巨大な WAV トラックの「展開待ち」をなくすための仕組み。
+================================================================ */
+
+/* ZIP ローカルヘッダを読み、エントリの圧縮データ実体の範囲を求める */
+async function entryDataRange(reader, entry) {
+    const lh = await reader.readUint8Array(entry.offset, 30);
+    if (lh.length < 30 || lh[0] !== 0x50 || lh[1] !== 0x4b || lh[2] !== 3 || lh[3] !== 4) {
+        throw new Error('local header not found');
+    }
+    const nameLen = lh[26] | (lh[27] << 8);
+    const extraLen = lh[28] | (lh[29] << 8);
+    const start = entry.offset + 30 + nameLen + extraLen;
+    return { start, end: start + entry.compressedSize };
+}
+
+/* 展開済み先頭バイト列から WAV の再生レートを読む (秒数換算用)。非WAVなら null */
+function parseWavMeta(head) {
+    if (head.length < 44) return null;
+    const tag = (o) => String.fromCharCode(head[o], head[o + 1], head[o + 2], head[o + 3]);
+    if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null;
+    let o = 12, byteRate = 0, dataOffset = 0;
+    while (o + 8 <= Math.min(head.length, 4096)) {
+        const id = tag(o);
+        const size = head[o + 4] | (head[o + 5] << 8) | (head[o + 6] << 16) | (head[o + 7] << 24);
+        if (id === 'fmt ') byteRate = head[o + 16] | (head[o + 17] << 8) | (head[o + 18] << 16) | (head[o + 19] << 24);
+        if (id === 'data') { dataOffset = o + 8; break; }
+        o += 8 + size + (size % 2);
+    }
+    return byteRate > 0 ? { byteRate, dataOffset } : null;
+}
+
+/**
+ * エントリを先頭から逐次展開する。展開済みが headBytes に達した時点で
+ * onHead(部分Blob, メタ) を一度呼び、その後も最後まで展開を続けて全体Blobを返す。
+ * 無圧縮(stored)は読んだ端から、Deflate は DecompressionStream で展開する。
+ * DecompressionStream 非対応環境では従来の一括展開へフォールバック。
+ */
+async function extractEntryProgressive(reader, entry, { headBytes, onHead, onProgress, isAlive }) {
+    const method = entry.compressionMethod;
+    const supported = method === 0 || (method === 8 && typeof DecompressionStream === 'function');
+    if (!supported) {
+        const blob = await entry.getData(new zip.BlobWriter(), {
+            onprogress: (done, total) => { if (onProgress && total) onProgress(done, total); }
+        });
+        if (onHead) onHead(blob, null);
+        return blob;
+    }
+    const { start, end } = await entryDataRange(reader, entry);
+    const blobParts = [];
+    let pending = [], pendingBytes = 0, out = 0, headDone = false, firstBytes = null;
+    const flush = () => {
+        if (pending.length) { blobParts.push(new Blob(pending)); pending = []; pendingBytes = 0; }
+    };
+    const push = (u8) => {
+        if (!firstBytes) firstBytes = u8.slice(0, 4096);
+        pending.push(u8); pendingBytes += u8.byteLength; out += u8.byteLength;
+        if (pendingBytes >= 32 * 1024 * 1024) flush();
+        if (!headDone && headBytes && out >= headBytes && onHead) {
+            headDone = true;
+            onHead(new Blob([...blobParts, ...pending]), parseWavMeta(firstBytes));
+        }
+        if (onProgress) onProgress(out, entry.uncompressedSize);
+    };
+    if (method === 0) {
+        let off = start;
+        while (off < end) {
+            if (isAlive && !isAlive()) throw new Error('aborted');
+            const len = Math.min(8 * 1024 * 1024, end - off);
+            const part = await reader.readUint8Array(off, len);
+            if (!part.length) break;
+            push(part); off += part.length;
+        }
+    } else {
+        const ds = new DecompressionStream('deflate-raw');
+        const writer = ds.writable.getWriter();
+        const rdr = ds.readable.getReader();
+        const pump = (async () => {
+            while (true) {
+                const { done, value } = await rdr.read();
+                if (done) break;
+                push(value);
+            }
+        })();
+        let off = start;
+        try {
+            while (off < end) {
+                if (isAlive && !isAlive()) throw new Error('aborted');
+                const len = Math.min(4 * 1024 * 1024, end - off);
+                const part = await reader.readUint8Array(off, len);
+                if (!part.length) break;
+                await writer.write(part); off += part.length;
+            }
+            await writer.close();
+        } catch (e) { try { writer.abort(); } catch (e2) {} throw e; }
+        await pump;
+    }
+    flush();
+    const full = new Blob(blobParts);
+    if (!headDone && onHead) onHead(full, parseWavMeta(firstBytes || new Uint8Array(0)));
+    return full;
+}
+
 const MEDIA_REGEX = /\.(mp3|wav|ogg|oga|m4a|flac|aac|opus|mp4|webm|m4v|mov)$/i;
 const VIDEO_REGEX = /\.(mp4|webm|m4v|mov)$/i;
 const LIB_FILE_REGEX = /\.(zip|cbz|pdf|mp3|wav|ogg|oga|m4a|flac|aac|opus|mp4|webm|m4v|mov)$/i;
@@ -634,6 +738,8 @@ document.addEventListener('alpine:init', () => {
             try {
                 this._albumCacheToken = (this._albumCacheToken || 0) + 1;
                 this._trackCache = {};
+                this._partialInfo = null; this._pendingFullSwap = null;
+                this._resumeAt = null; this._awaitFullResume = false;
                 if(this._openSrcReader) {
                     await this._openSrcReader.dispose();
                     this._openSrcReader = null;
@@ -882,6 +988,58 @@ document.addEventListener('alpine:init', () => {
                 } catch(e) {}
             }
         },
+        // WAV ストリーミング再生の開始: 先頭ブロックの展開完了で部分Blobを返し、
+        // 残りは裏で展開を続けて完了後に _pendingFullSwap へ積む
+        async startProgressiveTrack(f) {
+            const reader = this._openSrcReader;
+            const entry = f.entry;
+            const token = this._albumCacheToken || 0;
+            this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
+            this.loading.show = true; this.loading.minimal = false;
+            this.loading.text = 'トラック展開中...'; this.loading.progress = 0;
+            let headResolve;
+            const headPromise = new Promise(res => { headResolve = res; });
+            const run = extractEntryProgressive(reader, entry, {
+                headBytes: 12 * 1024 * 1024,
+                isAlive: () => (this._albumCacheToken || 0) === token && this._openSrcReader === reader,
+                onHead: (blob, wavMeta) => {
+                    if(blob.size < entry.uncompressedSize) {
+                        let coverage = 0;
+                        if(wavMeta && wavMeta.byteRate) coverage = Math.max(0, (blob.size - wavMeta.dataOffset) / wavMeta.byteRate);
+                        this._partialInfo = { full: f.full, coverage };
+                    }
+                    headResolve(blob);
+                },
+                onProgress: (done, total) => { if(total) this.loading.progress = done / total * 100; }
+            });
+            run.then((fullBlob) => {
+                if(this._trackCache && (this._albumCacheToken || 0) === token) this._trackCache[entry.filename] = fullBlob;
+                if(this._partialInfo && this._partialInfo.full === f.full) {
+                    this._pendingFullSwap = { full: f.full, f };
+                    if(this._awaitFullResume) {
+                        this._awaitFullResume = false;
+                        this.loading.show = false;
+                        this.maybeSwapToFull(this._partialInfo.coverage || null);
+                    }
+                }
+            }).catch(() => {}).finally(() => { this._onDemandExtracting--; });
+            try {
+                return await Promise.race([headPromise, run]);
+            } finally { this.loading.show = false; }
+        },
+        // 全体版が揃っていれば現在位置を引き継いで差し替える
+        maybeSwapToFull(targetTime) {
+            const pend = this._pendingFullSwap;
+            if(!pend || pend.full !== this.currentTrack) return false;
+            const cached = (this._trackCache && pend.f.entry) ? this._trackCache[pend.f.entry.filename] : null;
+            if(!cached) return false;
+            const pos = targetTime != null ? targetTime : (this.currentHowl ? (this.currentHowl.seek() || 0) : 0);
+            this._pendingFullSwap = null;
+            this._partialInfo = null;
+            this._resumeAt = pos;
+            this.playAudioFile(pend.f);
+            return true;
+        },
         async playAudioFile(f) {
             if(f.type === 'folder') { this.renderAudioDir(f.full); return; }
             if(f.type === 'file_image') { this.viewImage(f); return; }
@@ -890,6 +1048,11 @@ document.addEventListener('alpine:init', () => {
 
             if(this.currentHowl) { this.currentHowl.unload(); this.currentHowl = null; }
             if(this._trackUrl) { URL.revokeObjectURL(this._trackUrl); this._trackUrl = null; }
+            // 別トラックへ移るときはプログレッシブ再生の状態を破棄 (差し替え再入時は同一トラックなので保持)
+            if(this.currentTrack !== f.full) {
+                this._partialInfo = null; this._pendingFullSwap = null; this._resumeAt = null;
+                if(this._awaitFullResume) { this._awaitFullResume = false; this.loading.show = false; }
+            }
             let url;
             try {
                 if(f.url) {
@@ -898,7 +1061,12 @@ document.addEventListener('alpine:init', () => {
                 } else {
                     const cached = (f.entry && this._trackCache) ? this._trackCache[f.entry.filename] : null;
                     let b = f.blob || cached;
-                    if(!b) {
+                    if(!b && f.entry && this._openSrcReader && /\.wav$/i.test(f.name)
+                        && typeof f.entry.offset === 'number' && typeof f.entry.compressedSize === 'number') {
+                        // WAV ストリーミング再生: 先頭 (約1分強) だけ展開して即再生し、
+                        // 残りは同じストリームで裏展開 → 完了後に自然なタイミングで全体版へ差し替える
+                        b = await this.startProgressiveTrack(f);
+                    } else if(!b) {
                         // タップされたトラックを最優先で展開する (裏のキャッシュ展開は一時停止)
                         this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
                         this.loading.show = true; this.loading.minimal = false;
@@ -912,7 +1080,7 @@ document.addEventListener('alpine:init', () => {
                             this.loading.show = false;
                         }
                     }
-                    if(f.entry && this._trackCache && !this._trackCache[f.entry.filename]) this._trackCache[f.entry.filename] = b;
+                    if(f.entry && this._trackCache && !this._partialInfo && !this._trackCache[f.entry.filename]) this._trackCache[f.entry.filename] = b;
                     url = URL.createObjectURL(b);
                     this._trackUrl = url;
                 }
@@ -930,12 +1098,22 @@ document.addEventListener('alpine:init', () => {
                 src: [url], format: [ext], html5: true,
                 onplay: () => {
                     this.playing = true;
+                    if(this._resumeAt != null) { const at = this._resumeAt; this._resumeAt = null; this.currentHowl.seek(at); }
                     this.audioDuration = this.currentHowl.duration();
                     this.updateMediaSession();
                     this.startStep();
                 },
                 onpause: () => this.playing = false,
                 onend: () => {
+                    if(this._partialInfo && this._partialInfo.full === this.currentTrack) {
+                        // 部分データの終端に到達: 全体版が用意でき次第そこから再開する
+                        const at = this._partialInfo.coverage || (this.currentHowl ? (this.currentHowl.seek() || 0) : 0);
+                        if(this.maybeSwapToFull(at)) return;
+                        this._awaitFullResume = true;
+                        this.playing = false;
+                        this.loading.show = true; this.loading.minimal = true; this.loading.text = '';
+                        return;
+                    }
                     if(this.repeatMode === 2) { this.currentHowl.play(); }
                     else { this.playing = false; this.nextTrack(true); }
                 },
@@ -1066,17 +1244,32 @@ document.addEventListener('alpine:init', () => {
                 }
                 const d = this.currentHowl.duration();
                 if (d && d !== this.audioDuration) this.audioDuration = d;
+                // 部分再生の終端が近づいたら、全体版へ位置を引き継いで差し替える
+                if(this._partialInfo && this._partialInfo.full === this.currentTrack && this._pendingFullSwap
+                    && this._partialInfo.coverage > 0 && typeof t === 'number' && t > this._partialInfo.coverage - 12) {
+                    this.maybeSwapToFull();
+                }
             }
             requestAnimationFrame(() => this.step());
         },
         togglePlay() { if(this.currentHowl) { this.currentHowl.playing() ? this.currentHowl.pause() : this.currentHowl.play(); } },
         seekAudio(v) {
             this.isDragging = false;
-            if (this.currentHowl) {
-                this.currentHowl.seek(parseFloat(v));
-                this.audioTime = parseFloat(v);
-                this.sliderTime = parseFloat(v);
+            if (!this.currentHowl) return;
+            const t = parseFloat(v);
+            if(this._partialInfo && this._partialInfo.full === this.currentTrack
+                && this._partialInfo.coverage > 0 && t > this._partialInfo.coverage - 3) {
+                // 展開済み範囲を超えるシーク: 全体版があれば差し替え、なければ端でとどめる
+                if(this.maybeSwapToFull(t)) return;
+                const clamp = Math.max(0, this._partialInfo.coverage - 3);
+                this.currentHowl.seek(clamp);
+                this.audioTime = clamp; this.sliderTime = clamp;
+                this.showToast('この先はまだ展開中です');
+                return;
             }
+            this.currentHowl.seek(t);
+            this.audioTime = t;
+            this.sliderTime = t;
         },
         toggleRepeat() { this.repeatMode = (this.repeatMode+1)%3; this.showToast(this.repeatMode===0?"リピートOFF":this.repeatMode===1?"全曲リピート":"1曲リピート"); },
         toggleShuffle() { this.isShuffle = !this.isShuffle; this.showToast(this.isShuffle?"シャッフルON":"シャッフルOFF"); },
