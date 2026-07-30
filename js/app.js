@@ -22,6 +22,36 @@ const ICONS={
     text: '<svg viewBox="0 0 24 24" class="svg-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>'
 };
 const IMG_REGEX = /\.(jpg|jpeg|png|gif|webp)$/i;
+const TITLE_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+function readStoredJson(key, fallback) {
+    try {
+        const raw = localStorage.getItem(key);
+        if(raw === null) return fallback;
+        const value = JSON.parse(raw);
+        return value === null ? fallback : value;
+    } catch(e) {
+        console.warn(`保存データを読み込めませんでした: ${key}`, e);
+        return fallback;
+    }
+}
+
+function writeStoredJson(key, value) {
+    try {
+        localStorage.setItem(key, JSON.stringify(value));
+        return true;
+    } catch(e) {
+        console.error(`保存データを書き込めませんでした: ${key}`, e);
+        return false;
+    }
+}
+
+function decodeBase64Bytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for(let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+}
 
 function createZipReader(blob) {
     return new zip.ZipReader(new zip.BlobReader(blob), { filenameEncoding: 'shift-jis' });
@@ -38,7 +68,7 @@ async function openReflectChannel(uri) {
     const fd = await R.call({ ref: pfd.__ref, method: 'getFileDescriptor' });
     const fis = await R['new']({ class: 'java.io.FileInputStream', args: [{ __ref: fd.__ref }] });
     const ch = await R.call({ ref: fis.__ref, method: 'getChannel' });
-    for (const h of [resolver, uriObj, fd]) { try { await R.release({ ref: h.__ref }); } catch (e) {} }
+    for (const h of [resolver, uriObj, fd, ctx]) { try { await R.release({ ref: h.__ref }); } catch (e) {} }
     return { pfd, fis, ch, size: Number(size) };
 }
 async function reflectRead(refl, offset, length) {
@@ -51,8 +81,7 @@ async function reflectRead(refl, offset, length) {
         try {
             /* Base64.encodeToString(byte[], offset, count, NO_WRAP=2) で一括転送 */
             const b64 = await R.staticCall({ class: 'android.util.Base64', method: 'encodeToString', args: [{ __ref: arr.__ref }, 0, n, 2] });
-            const buf = await (await fetch('data:application/octet-stream;base64,' + b64)).arrayBuffer();
-            return new Uint8Array(buf);
+            return decodeBase64Bytes(b64);
         } finally {
             try { await R.release({ ref: arr.__ref }); } catch (e) {}
         }
@@ -204,8 +233,8 @@ function parseWavMeta(head) {
     let o = 12, byteRate = 0, dataOffset = 0;
     while (o + 8 <= Math.min(head.length, 4096)) {
         const id = tag(o);
-        const size = head[o + 4] | (head[o + 5] << 8) | (head[o + 6] << 16) | (head[o + 7] << 24);
-        if (id === 'fmt ') byteRate = head[o + 16] | (head[o + 17] << 8) | (head[o + 18] << 16) | (head[o + 19] << 24);
+        const size = (head[o + 4] | (head[o + 5] << 8) | (head[o + 6] << 16) | (head[o + 7] << 24)) >>> 0;
+        if (id === 'fmt ' && o + 20 <= head.length) byteRate = (head[o + 16] | (head[o + 17] << 8) | (head[o + 18] << 16) | (head[o + 19] << 24)) >>> 0;
         if (id === 'data') { dataOffset = o + 8; break; }
         o += 8 + size + (size % 2);
     }
@@ -369,18 +398,18 @@ document.addEventListener('alpine:init', () => {
         longPressTimer: null, ignoreClick: false,
 
         init() {
-            const s = localStorage.getItem('appSettings');
-            if(s) { _.assign(this.settings, JSON.parse(s)); }
+            const s = readStoredJson('appSettings', {});
+            if(s && typeof s === 'object' && !Array.isArray(s)) _.assign(this.settings, s);
             // 旧バージョンのカラー値を新パレットへ移行
             const colorMigration = { '#0095f6': '#7bb3d7', '#ff3b30': '#ff453a', '#ff9500': '#ff9f0a' };
             if(colorMigration[this.settings.accentColor]) this.settings.accentColor = colorMigration[this.settings.accentColor];
             delete this.settings.darkMode;
-            const l = localStorage.getItem('appLibrary');
-            if(l) this.library = JSON.parse(l);
-            const lst = localStorage.getItem('appLists');
-            if(lst) this.lists = JSON.parse(lst);
+            const l = readStoredJson('appLibrary', []);
+            if(Array.isArray(l)) this.library = l;
+            const lst = readStoredJson('appLists', []);
+            if(Array.isArray(lst)) this.lists = lst;
 
-            this.$watch('settings', v => { localStorage.setItem('appSettings', JSON.stringify(v)); this.applyTheme(); this._viewerDirty = true; });
+            this.$watch('settings', v => { writeStoredJson('appSettings', v); this.applyTheme(); this._viewerDirty = true; });
 
             this.applyTheme();
 
@@ -421,11 +450,12 @@ document.addEventListener('alpine:init', () => {
         get gridClass() { return 'library-grid ' + (this.settings.thumbSize==='small'?'grid-small':(this.settings.thumbSize==='large'?'grid-large':'')); },
         get filteredLibrary() {
             const qRaw = this.searchQuery.toLowerCase();
-            const qRomaji = toRomaji(qRaw);
+            const qRomaji = qRaw ? toRomaji(qRaw) : '';
 
             const filtered = _.filter(this.library, i => {
                 if(!this.settings.showAdult && i.isAdult) return false;
                 if(this.filter!=='all' && ((this.filter==='book' && i.type!=='book') || (this.filter==='audio' && i.type==='book'))) return false;
+                if(!qRaw) return true;
 
                 const tRaw = (i.title || '').toLowerCase();
                 const aRaw = (i.author || '').toLowerCase();
@@ -439,13 +469,14 @@ document.addEventListener('alpine:init', () => {
             });
 
             return filtered.sort((a, b) => {
-                return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+                return TITLE_COLLATOR.compare(a.title || '', b.title || '');
             });
         },
         getListItems() {
             if(!this.currentList) return [];
-            const items = _.filter(this.library, i => this.currentList.items.includes(i.id));
-            return items.sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }));
+            const ids = new Set(this.currentList.items);
+            const items = _.filter(this.library, i => ids.has(i.id));
+            return items.sort((a, b) => TITLE_COLLATOR.compare(a.title || '', b.title || ''));
         },
 
         async handleFile(e, type) {
@@ -455,7 +486,7 @@ document.addEventListener('alpine:init', () => {
             this.loading.minimal = false;
             this.loading.text = "処理中...";
 
-            let count = 0;
+            let count = 0, added = 0;
             for(const f of files) {
                 count++;
                 this.loading.progress = (count / files.length) * 100;
@@ -465,12 +496,13 @@ document.addEventListener('alpine:init', () => {
                 let title = f.name.replace(/\.(zip|cbz|pdf|mp3|wav|ogg|oga|m4a|flac|aac|opus|mp4|webm|m4v|mov)$/i,'');
                 let author = '不明';
 
+                let pdf = null, importZipReader = null;
                 try {
                     if(f.type === 'application/pdf' || f.name.match(/\.pdf$/i)) {
                         this.loading.text = "PDF変換中...";
                         this.loading.subText = "ページ解析を開始します";
                         const pdfData = await f.arrayBuffer();
-                        const pdf = await pdfjsLib.getDocument({data: pdfData}).promise;
+                        pdf = await pdfjsLib.getDocument({data: pdfData}).promise;
                         const numPages = pdf.numPages;
                         const zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
                         for(let i=1; i<=numPages; i++) {
@@ -494,8 +526,8 @@ document.addEventListener('alpine:init', () => {
                         this.library.push({ id, type: 'book', title: title, author: author, isAdult: false, hasThumb: !!thumb, bookmarks: [] });
                     }
                     else if(f.name.match(/\.(zip|cbz)$/i)) {
-                        const r = createZipReader(f);
-                        const es = await r.getEntries();
+                        importZipReader = createZipReader(f);
+                        const es = await importZipReader.getEntries();
                         const infoEntry = _.find(es, x => x.filename.toLowerCase() === 'comicinfo.xml');
                         if(infoEntry) {
                             const text = await infoEntry.getData(new zip.TextWriter());
@@ -508,7 +540,6 @@ document.addEventListener('alpine:init', () => {
                         }
                         const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX)).sort((a,b)=>a.filename.localeCompare(b.filename, undefined, {numeric:true}));
                         if(imgs.length > 0) thumb = await imgs[0].getData(new zip.BlobWriter());
-                        r.close();
                         await db.files.put({zipBlob:f}, id);
                         if(thumb) await db.files.put(thumb, id+'_thumb');
                         this.library.push({ id, type: type, title: title, author: author, isAdult: false, hasThumb: !!thumb, bookmarks: [] });
@@ -517,17 +548,25 @@ document.addEventListener('alpine:init', () => {
                         await db.files.put(f, id);
                         this.library.push({ id, type: type, title: title, author: author, isAdult: false, hasThumb: false, bookmarks: [] });
                     }
-                } catch(e){ console.error(e); this.showToast("取り込みエラー: " + f.name); }
+                    added++;
+                } catch(e){
+                    console.error(e);
+                    await Promise.allSettled([db.files.delete(id), db.files.delete(id+'_thumb')]);
+                    this.showToast("取り込みエラー: " + f.name);
+                } finally {
+                    if(pdf) { try { await pdf.destroy(); } catch(e) {} }
+                    if(importZipReader) { try { await importZipReader.close(); } catch(e) {} }
+                }
                 await new Promise(r=>setTimeout(r,10));
             }
             this.saveMeta();
             this.loading.show = false; e.target.value = '';
-            this.showToast(count+"件追加しました");
+            this.showToast(added === count ? `${added}件追加しました` : `${added}/${count}件追加しました`);
         },
 
         async loadThumb(id) {
             if(this.thumbnails[id]) return;
-            try { const blob = await db.files.get(id+'_thumb'); if(blob) { this.thumbnails[id] = URL.createObjectURL(blob); return; } } catch(e) {}
+            try { const blob = await db.files.get(id+'_thumb'); if(blob) { this.replaceThumbnailUrl(id, URL.createObjectURL(blob)); return; } } catch(e) {}
             // 初めて画面に表示されたときにサムネイルを生成し、以後は保存済みキャッシュから読む
             const item = _.find(this.library, {id});
             if(item && item.path && !item.indexed) this.queueIndexItem(item);
@@ -548,11 +587,16 @@ document.addEventListener('alpine:init', () => {
                 catch(e) { console.error('index error:', item.path, e); item.indexed = true; }
                 this.saveMeta();
                 if(item.hasThumb && !this.thumbnails[item.id]) {
-                    try { const blob = await db.files.get(item.id+'_thumb'); if(blob) this.thumbnails[item.id] = URL.createObjectURL(blob); } catch(e) {}
+                    try { const blob = await db.files.get(item.id+'_thumb'); if(blob) this.replaceThumbnailUrl(item.id, URL.createObjectURL(blob)); } catch(e) {}
                 }
                 await new Promise(r => setTimeout(r, 30));
             }
             this._indexing = false;
+        },
+        replaceThumbnailUrl(id, url) {
+            const old = this.thumbnails[id];
+            if(old && old !== url && old.startsWith('blob:')) URL.revokeObjectURL(old);
+            this.thumbnails[id] = url;
         },
 
         /* ===== ライブラリフォルダ (さきいかビルダー / SAF) ===== */
@@ -597,18 +641,35 @@ document.addEventListener('alpine:init', () => {
                 const byPath = {};
                 this.library.forEach(i => { if(i.path) byPath[i.path] = i; });
                 const keep = this.library.filter(i => !i.path);
+                const invalidThumbIds = [];
                 const items = found.map(f => {
                     const existing = byPath[f.path];
-                    if(existing) return existing;
+                    if(existing) {
+                        if(existing.fileSize !== undefined && existing.fileSize !== f.size) {
+                            existing.indexed = false;
+                            existing.hasThumb = false;
+                            invalidThumbIds.push(existing.id);
+                        }
+                        existing.fileSize = f.size;
+                        return existing;
+                    }
                     const ext = f.name.split('.').pop().toLowerCase();
                     const isBook = ['zip','cbz','pdf'].includes(ext);
                     return {
                         id: this.pathId(f.path), path: f.path,
                         type: isBook ? 'book' : 'audio',
                         title: f.name.replace(/\.[^.]+$/, ''), author: '不明',
-                        isAdult: false, hasThumb: false, bookmarks: [], indexed: false
+                        isAdult: false, hasThumb: false, bookmarks: [], indexed: false, fileSize: f.size
                     };
                 });
+                if(invalidThumbIds.length) {
+                    await Promise.all(invalidThumbIds.map(id => db.files.delete(id + '_thumb')));
+                    invalidThumbIds.forEach(id => {
+                        const url = this.thumbnails[id];
+                        if(url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+                        delete this.thumbnails[id];
+                    });
+                }
                 this.library = keep.concat(items);
                 this.saveMeta();
                 // サムネイル生成は起動時には行わず、作品が初めて画面に表示されたときに行う (loadThumb 参照)
@@ -676,18 +737,19 @@ document.addEventListener('alpine:init', () => {
         },
         // キャッシュ節約のためサムネイルを縮小して保存する
         async shrinkImage(blob) {
+            let url = null;
             try {
-                const url = URL.createObjectURL(blob);
+                url = URL.createObjectURL(blob);
                 const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
                 const scale = Math.min(1, 480 / Math.max(img.width, img.height));
                 const canvas = document.createElement('canvas');
                 canvas.width = Math.max(1, Math.round(img.width * scale));
                 canvas.height = Math.max(1, Math.round(img.height * scale));
                 canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                URL.revokeObjectURL(url);
                 const out = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.82));
                 return out || blob;
             } catch(e) { return blob; }
+            finally { if(url) URL.revokeObjectURL(url); }
         },
         // SAF上のファイル全体をBlobとして読み込む (PDFなど)
         async readPathBlob(path, mime) {
@@ -701,8 +763,8 @@ document.addEventListener('alpine:init', () => {
 
         /* ---- 漫画側の読み込み元だけを破棄する (音声の再生・展開には触れない) ---- */
         async closeBookSource() {
-            if(this._openSrcReader) { const r = this._openSrcReader; this._openSrcReader = null; try { await r.dispose(); } catch(e) {} }
             if(this._openZipReader) { try { await this._openZipReader.close(); } catch(e) {} this._openZipReader = null; }
+            if(this._openSrcReader) { const r = this._openSrcReader; this._openSrcReader = null; try { await r.dispose(); } catch(e) {} }
             if(this._openPdfDoc) { try { this._openPdfDoc.destroy(); } catch(e) {} this._openPdfDoc = null; }
         },
         /* ---- 音声側の再生・キャッシュ・読み込み元だけを破棄する ---- */
@@ -716,6 +778,12 @@ document.addEventListener('alpine:init', () => {
             if(this._trackUrl) { URL.revokeObjectURL(this._trackUrl); this._trackUrl = null; }
             this.playing = false;
             this.playlist = [];
+            this.audioFiles = [];
+            this.currentTrack = null;
+            this.currentTrackName = '';
+            this.audioTime = 0;
+            this.sliderTime = 0;
+            this.audioDuration = 0;
             this._audioAlbum = null;
             this._allAudioEntries = [];
             if(this._audioZipReader) { try { await this._audioZipReader.close(); } catch(e) {} this._audioZipReader = null; }
@@ -725,20 +793,33 @@ document.addEventListener('alpine:init', () => {
                 try { await r.dispose(); } catch(e) {}
             }
         },
-        async openPathItem(item) {
+        async openPathItem(item, openToken) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(['zip','cbz'].includes(ext)) {
                 // まず目次だけを reflect で即読みし、全体先読みの要否は種別とサイズで決める
                 const src = new SakiikaRandomReader(item.path, { noPrefetch: true });
                 const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
-                const es = await r.getEntries();
+                let es;
+                try { es = await r.getEntries(); }
+                catch(e) {
+                    try { await r.close(); } catch(closeError) {}
+                    await src.dispose();
+                    throw e;
+                }
+                if(openToken !== this._openToken) {
+                    try { await r.close(); } catch(e) {}
+                    await src.dispose();
+                    return;
+                }
                 // 未インデックスでも正しく開けるよう、中身から種別を確定する
                 const hasMedia = es.some(x => !x.directory && MEDIA_REGEX.test(x.filename));
                 const kind = hasMedia ? 'audio' : 'book';
                 if(item.type !== kind) { item.type = kind; this.saveMeta(); }
                 if(kind === 'book') {
                     await this.closeBookSource();
+                    if(openToken !== this._openToken) { try { await r.close(); } catch(e) {} await src.dispose(); return; }
                     this._openSrcReader = src;
+                    this._openZipReader = r;
                     this.currentItem = item;
                     src.startPrefetch();   // 漫画はランダムアクセスが主なので全体 Blob 化が最速
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX))
@@ -748,7 +829,9 @@ document.addEventListener('alpine:init', () => {
                     this.page = 'reels';
                 } else {
                     await this.closeAudioSource();
+                    if(openToken !== this._openToken) { try { await r.close(); } catch(e) {} await src.dispose(); return; }
                     this._audioSrcReader = src;
+                    this._audioZipReader = r;
                     this.currentAudioItem = item;
                     // 音声: 巨大な作品はファイル全体の複製を作らず reflect 直読みで展開する
                     if(src.size <= 1.5 * 1024 * 1024 * 1024) src.startPrefetch();
@@ -760,9 +843,12 @@ document.addEventListener('alpine:init', () => {
                 }
             } else if(ext === 'pdf') {
                 await this.closeBookSource();
-                this.currentItem = item;
+                if(openToken !== this._openToken) return;
                 const blob = await this.readPathBlob(item.path, 'application/pdf');
+                if(openToken !== this._openToken) return;
                 const pdf = await pdfjsLib.getDocument({ data: await blob.arrayBuffer() }).promise;
+                if(openToken !== this._openToken) { try { await pdf.destroy(); } catch(e) {} return; }
+                this.currentItem = item;
                 this._openPdfDoc = pdf;
                 this.initViewer(pdf.numPages, (i) => this.renderPdfPage(pdf, i + 1));
                 this._viewerDirty = false;
@@ -778,6 +864,7 @@ document.addEventListener('alpine:init', () => {
             } else {
                 // 単体の音声/動画ファイル: content URIで直接再生する
                 await this.closeAudioSource();
+                if(openToken !== this._openToken) return;
                 this.currentAudioItem = item;
                 this.loadThumb(item.id);
                 const name = item.path.split('/').pop();
@@ -794,35 +881,43 @@ document.addEventListener('alpine:init', () => {
 
         async handleClick(item) { if(this.ignoreClick) return; if(this.selectionMode) { this.selectedIds = _.xor(this.selectedIds, [item.id]); } else { this.openItem(item); } },
         async openItem(item) {
+            const openToken = this._openToken = (this._openToken || 0) + 1;
             // 作品を開くときの読み込み表示は出さない (目次読みだけで開けるため)。
             // 漫画と音声は状態を完全分離しており、互いの読み込み元や展開を巻き込まない
             try {
                 if(item.path) {
-                    await this.openPathItem(item);
+                    await this.openPathItem(item, openToken);
                     return;
                 }
                 const data = await db.files.get(item.id);
+                if(openToken !== this._openToken) return;
+                if(!data) throw new Error('保存ファイルが見つかりません: ' + item.id);
                 if(item.isPdf && data.pdfBlob) {
                     await this.closeBookSource();
-                    this.currentItem = item;
+                    if(openToken !== this._openToken) return;
                     this.showToast("古い形式のPDFです。再インポートすると高速化されます");
                     const arrayBuffer = await data.pdfBlob.arrayBuffer();
                     const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+                    if(openToken !== this._openToken) { try { await pdf.destroy(); } catch(e) {} return; }
+                    this.currentItem = item;
                     this._openPdfDoc = pdf;
                     this.initViewer(pdf.numPages, (i) => this.renderPdfPage(pdf, i + 1));
                     this.page = 'reels';
                 }
                 else if(item.type === 'book' && data.zipBlob) {
                     await this.closeBookSource();
+                    if(openToken !== this._openToken) return;
                     this.currentItem = item;
                     const r = createZipReader(data.zipBlob);
                     const es = await r.getEntries();
+                    if(openToken !== this._openToken) { try { await r.close(); } catch(e) {} return; }
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX)).sort((a,b)=>a.filename.localeCompare(b.filename, undefined, {numeric:true}));
                     this._openZipReader = r; // ページ読み込みのため開いたままにする
                     this.initViewer(imgs.length, (i) => imgs[i].getData(new zip.BlobWriter()));
                     this.page = 'reels';
                 } else {
                     await this.closeAudioSource();
+                    if(openToken !== this._openToken) return;
                     this.currentAudioItem = item;
                     this.loadThumb(item.id);
                     if(data && data.zipBlob) {
@@ -842,12 +937,16 @@ document.addEventListener('alpine:init', () => {
                     }
                     this.page = 'audio';
                 }
-            } catch(e) { console.error(e); this.showToast("読み込みエラーが発生しました"); }
+            } catch(e) {
+                console.error(e);
+                if(openToken === this._openToken) this.showToast("読み込みエラーが発生しました");
+            }
         },
 
         selectAll() { this.selectedIds = (this.page === 'lists' && this.currentList) ? this.getListItems().map(i => i.id) : this.filteredLibrary.map(i => i.id); },
         openEditModal() {
             if (this.selectedIds.length === 0) return;
+            this.releaseTempThumb();
             this.editModal.isBatch = this.selectedIds.length > 1;
             this.editModal.show = true;
             if (this.editModal.isBatch) {
@@ -897,7 +996,7 @@ document.addEventListener('alpine:init', () => {
                         const resp = await fetch(this.editModal.tempThumb);
                         const blob = await resp.blob();
                         await db.files.put(blob, item.id+'_thumb');
-                        this.thumbnails[item.id] = this.editModal.tempThumb;
+                        this.replaceThumbnailUrl(item.id, URL.createObjectURL(blob));
                         item.hasThumb = true;
                     }
                     if(item.type === 'book' && !item.isPdf && !item.path) {
@@ -941,16 +1040,31 @@ document.addEventListener('alpine:init', () => {
             this.saveMeta();
             this.showToast("保存しました");
             this.loading.show = false;
-            this.editModal.show = false;
+            this.closeEditModal();
             this.selectionMode = false;
             this.selectedIds = [];
         },
+        releaseTempThumb() {
+            if(this.editModal.tempThumb) {
+                try { URL.revokeObjectURL(this.editModal.tempThumb); } catch(e) {}
+                this.editModal.tempThumb = null;
+            }
+        },
+        closeEditModal() {
+            this.editModal.show = false;
+            this.closeCoverSelector();
+            this.releaseTempThumb();
+        },
         uploadCover(e) {
             const file = e.target.files[0];
-            if(file) { this.editModal.tempThumb = URL.createObjectURL(file); }
+            if(file) {
+                this.releaseTempThumb();
+                this.editModal.tempThumb = URL.createObjectURL(file);
+            }
             e.target.value = '';
         },
         async openCoverSelector() {
+            await this.closeCoverSource();
             this.coverSelector.show = true;
             this.coverSelector.loading = true;
             this.coverSelector.images = [];
@@ -958,27 +1072,40 @@ document.addEventListener('alpine:init', () => {
                 const item = _.find(this.library, {id: this.editModal.id});
                 let r = null;
                 if(item && item.path && /\.(zip|cbz)$/i.test(item.path)) {
-                    r = new zip.ZipReader(new SakiikaRandomReader(item.path, { noPrefetch: true }), { filenameEncoding: 'shift-jis' });
+                    const src = new SakiikaRandomReader(item.path, { noPrefetch: true });
+                    this._tempSrcReader = src;
+                    r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
                 } else {
                     const data = await db.files.get(this.editModal.id);
                     if(data && data.zipBlob) r = createZipReader(data.zipBlob);
                 }
                 if(r) {
+                    this._tempZipReader = r;
                     const es = await r.getEntries();
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX)).sort((a,b)=>a.filename.localeCompare(b.filename, undefined, {numeric:true}));
                     this.coverSelector.images = imgs;
-                    this._tempZipReader = r;
                 }
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error(e); await this.closeCoverSource(); }
             this.coverSelector.loading = false;
+        },
+        /* 表紙候補で開いた ZIP と SAF リーダーを確実に畳む (fd リーク防止) */
+        async closeCoverSource() {
+            if(this._tempZipReader) { try { await this._tempZipReader.close(); } catch(e) {} this._tempZipReader = null; }
+            if(this._tempSrcReader) { try { await this._tempSrcReader.dispose(); } catch(e) {} this._tempSrcReader = null; }
+        },
+        closeCoverSelector() {
+            this.coverSelector.show = false;
+            this.coverSelector.images = [];
+            this.closeCoverSource();
         },
         async previewCover(entry) {
             this.loading.show = true;
             try {
                 const blob = await entry.getData(new zip.BlobWriter());
+                if(this.editModal.tempThumb) { try { URL.revokeObjectURL(this.editModal.tempThumb); } catch(e) {} }
                 this.editModal.tempThumb = URL.createObjectURL(blob);
                 this.coverSelector.show = false;
-                if(this._tempZipReader) this._tempZipReader.close();
+                await this.closeCoverSource();
             } catch(e) { console.error(e); this.showToast("表紙を読み込めませんでした"); }
             this.loading.show = false;
         },
@@ -1275,10 +1402,18 @@ document.addEventListener('alpine:init', () => {
         async viewImage(f) {
             try {
                 const blob = await f.entry.getData(new zip.BlobWriter());
+                this.closeImageViewer();
                 this.imageViewer.src = URL.createObjectURL(blob);
                 this.imageViewer.show = true;
             } catch(e) { console.error(e); this.showToast("画像を読み込めませんでした"); }
             this.loading.show = false;
+        },
+        closeImageViewer() {
+            this.imageViewer.show = false;
+            if(this.imageViewer.src) {
+                try { URL.revokeObjectURL(this.imageViewer.src); } catch(e) {}
+                this.imageViewer.src = '';
+            }
         },
 
         async viewText(f) {
@@ -1384,9 +1519,12 @@ document.addEventListener('alpine:init', () => {
             this.buildSwiper();
         },
         releaseViewerPages() {
+            clearTimeout(this._pageWindowTimer);
+            this._pageWindowTimer = null;
             Object.values(this._pageUrls || {}).forEach(u => URL.revokeObjectURL(u));
             this._pageUrls = {};
             this._pendingPages = {};
+            this._lastActiveSlide = undefined;
         },
         isDoubleMode() { return this.settings.doublePage && this.settings.scrollMode !== 'vertical'; },
         slideCount() {
@@ -1487,7 +1625,7 @@ document.addEventListener('alpine:init', () => {
                         this.applyPageUrl(p, url);
                     }
                 } catch(e) { console.error('page load error:', p, e); }
-                delete this._pendingPages[p];
+                finally { delete this._pendingPages[p]; }
             }
         },
         async renderPdfPage(pdf, pageNumber) {
@@ -1556,7 +1694,7 @@ document.addEventListener('alpine:init', () => {
             return { no_change: '変更しない', true: '成人向け (R-18) にする', false: '一般 (全年齢) にする' }[this.editModal.batchAdultMode] || '変更しない';
         },
 
-        saveLists() { localStorage.setItem('appLists', JSON.stringify(this.lists)); },
+        saveLists() { writeStoredJson('appLists', this.lists); },
         openPrompt(title, initial, onConfirm) {
             this.promptData.title = title;
             this.promptData.inputValue = initial || '';
@@ -1638,8 +1776,13 @@ document.addEventListener('alpine:init', () => {
                         for(const it of pathTargets) {
                             try { await Android.fs.delete({ path: it.path, recursive: true }); } catch(e) { console.error(e); }
                         }
-                        db.files.bulkDelete(this.selectedIds);
-                        this.selectedIds.forEach(id => db.files.delete(id+'_thumb'));
+                        await db.files.bulkDelete(this.selectedIds);
+                        await Promise.all(this.selectedIds.map(id => db.files.delete(id+'_thumb')));
+                        this.selectedIds.forEach(id => {
+                            const url = this.thumbnails[id];
+                            if(url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+                            delete this.thumbnails[id];
+                        });
                         this.library = _.filter(this.library, i => !this.selectedIds.includes(i.id));
                         this.saveMeta();
                         this.showToast("削除しました");
@@ -1677,8 +1820,13 @@ document.addEventListener('alpine:init', () => {
                 await db.files.clear(); localStorage.clear(); location.reload();
             }});
         },
-        saveMeta() { localStorage.setItem('appLibrary', JSON.stringify(this.library)); },
-        showToast(msg) { this.toast.message = msg; this.toast.show = true; _.delay(() => this.toast.show = false, 2000); },
+        saveMeta() { writeStoredJson('appLibrary', this.library); },
+        showToast(msg) {
+            clearTimeout(this._toastTimer);
+            this.toast.message = msg;
+            this.toast.show = true;
+            this._toastTimer = setTimeout(() => { this.toast.show = false; this._toastTimer = null; }, 2000);
+        },
         fmtTime(s) { if(!s || isNaN(s)) return "0:00"; const m = Math.floor(s/60), sec = Math.floor(s%60); return `${m}:${sec<10?'0':''}${sec}`; },
 
         getMarkerStyle(p) {
