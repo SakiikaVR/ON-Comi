@@ -27,35 +27,83 @@ function createZipReader(blob) {
     return new zip.ZipReader(new zip.BlobReader(blob), { filenameEncoding: 'shift-jis' });
 }
 
+/* ---- さきいかビルダー reflect フォールバック: FileChannel の位置指定読み ---- */
+async function openReflectChannel(uri) {
+    const R = Android.reflect;
+    const ctx = await R.context();
+    const resolver = await R.call({ ref: ctx.__ref, method: 'getContentResolver' });
+    const uriObj = await R.staticCall({ class: 'android.net.Uri', method: 'parse', args: [uri] });
+    const pfd = await R.call({ ref: resolver.__ref, method: 'openFileDescriptor', args: [{ __ref: uriObj.__ref }, 'r'] });
+    const size = await R.call({ ref: pfd.__ref, method: 'getStatSize' });
+    const fd = await R.call({ ref: pfd.__ref, method: 'getFileDescriptor' });
+    const fis = await R['new']({ class: 'java.io.FileInputStream', args: [{ __ref: fd.__ref }] });
+    const ch = await R.call({ ref: fis.__ref, method: 'getChannel' });
+    for (const h of [resolver, uriObj, fd]) { try { await R.release({ ref: h.__ref }); } catch (e) {} }
+    return { pfd, fis, ch, size: Number(size) };
+}
+async function reflectRead(refl, offset, length) {
+    const R = Android.reflect;
+    const bb = await R.staticCall({ class: 'java.nio.ByteBuffer', method: 'allocate', args: [length] });
+    try {
+        const n = await R.call({ ref: refl.ch.__ref, method: 'read', args: [{ __ref: bb.__ref }, { type: 'long', value: offset }] });
+        if (typeof n !== 'number' || n <= 0) return new Uint8Array(0);
+        const arr = await R.call({ ref: bb.__ref, method: 'array' });
+        try {
+            /* Base64.encodeToString(byte[], offset, count, NO_WRAP=2) で一括転送 */
+            const b64 = await R.staticCall({ class: 'android.util.Base64', method: 'encodeToString', args: [{ __ref: arr.__ref }, 0, n, 2] });
+            const buf = await (await fetch('data:application/octet-stream;base64,' + b64)).arrayBuffer();
+            return new Uint8Array(buf);
+        } finally {
+            try { await R.release({ ref: arr.__ref }); } catch (e) {}
+        }
+    } finally {
+        try { await R.release({ ref: bb.__ref }); } catch (e) {}
+    }
+}
+async function closeReflectChannel(refl) {
+    const R = Android.reflect;
+    for (const [h, close] of [[refl.ch, true], [refl.fis, true], [refl.pfd, true]]) {
+        if (close) { try { await R.call({ ref: h.__ref, method: 'close' }); } catch (e) {} }
+        try { await R.release({ ref: h.__ref }); } catch (e) {}
+    }
+}
+
 /**
- * MedjedBuilder (H2Aブリッジ) のランダムアクセスAPIをzip.jsのReaderとして包む。
- * ファイル全体を転送せず、ZIPの目次や必要なエントリだけを読み出せる。
+ * さきいかビルダーのブリッジで選択フォルダー内のファイルをランダムアクセス読みする
+ * zip.js Reader。ファイル全体を転送せず、ZIPの目次や必要なエントリだけを読み出せる。
+ * content URI を XHR で Blob 化して読む (Blob はディスクバックで低メモリ)。
+ * XHR が使えない環境では reflect の FileChannel 位置読みにフォールバックする。
  */
-class H2ARandomReader extends zip.Reader {
-    constructor(fullPath) { super(); this.fullPath = fullPath; this.id = null; this.size = 0; }
+class SakiikaRandomReader extends zip.Reader {
+    constructor(path) { super(); this.path = path; this.blob = null; this.refl = null; this.size = 0; }
     async init() {
-        const info = await H2A.openRandom(this.fullPath);
-        this.id = info.id;
-        this.size = info.size;
+        if (this.blob || this.refl) return;
+        const st = await Android.fs.stat({ path: this.path });
+        if (!st || st.isDir || !st.uri) throw new Error('開けません: ' + this.path);
+        this.size = st.size;
+        try {
+            this.blob = await new Promise((resolve, reject) => {
+                const x = new XMLHttpRequest();
+                x.open('GET', st.uri, true);
+                x.responseType = 'blob';
+                x.onload = () => (x.response && x.response.size > 0) ? resolve(x.response) : reject(new Error('empty response'));
+                x.onerror = () => reject(new Error('xhr error'));
+                x.send();
+            });
+            this.size = this.blob.size;
+        } catch (e) {
+            this.refl = await openReflectChannel(st.uri);
+            if (this.refl.size > 0) this.size = this.refl.size;
+        }
     }
     async readUint8Array(index, length) {
-        const parts = [];
-        let got = 0;
-        while (got < length) {
-            const chunk = Math.min(8 * 1024 * 1024, length - got);
-            const b64 = await H2A.readRandom(this.id, index + got, chunk);
-            if (!b64) break;
-            const buf = await (await fetch('data:application/octet-stream;base64,' + b64)).arrayBuffer();
-            parts.push(new Uint8Array(buf));
-            got += buf.byteLength;
-            if (buf.byteLength < chunk) break;
-        }
-        const out = new Uint8Array(got);
-        let off = 0;
-        parts.forEach(p => { out.set(p, off); off += p.byteLength; });
-        return out;
+        await this.init();
+        if (index >= this.size) return new Uint8Array(0);
+        const len = Math.min(length, this.size - index);
+        if (this.blob) return new Uint8Array(await this.blob.slice(index, index + len).arrayBuffer());
+        return reflectRead(this.refl, index, len);
     }
-    async dispose() { if (this.id !== null) { try { await H2A.closeRandom(this.id); } catch (e) {} this.id = null; } }
+    async dispose() { if (this.refl) { try { await closeReflectChannel(this.refl); } catch (e) {} this.refl = null; } this.blob = null; }
 }
 
 const MEDIA_REGEX = /\.(mp3|wav|ogg|oga|m4a|flac|aac|opus|mp4|webm|m4v|mov)$/i;
@@ -116,7 +164,7 @@ function toRomaji(str) {
 document.addEventListener('alpine:init', () => {
     Alpine.data('app', () => ({
         page: 'home', library: [], lists: [],
-        settings: { thumbSize:'small', accentColor:'#7bb3d7', showAdult:true, scrollMode:'horizontal', direction:'rtl', doublePage:false, resume:true },
+        settings: { theme:'dark', thumbSize:'small', accentColor:'#7bb3d7', showAdult:true, scrollMode:'horizontal', direction:'rtl', doublePage:false, resume:true },
         filter:'all', searchQuery:'', selectionMode:false, selectedIds:[],
         loading:{show:false, text:'', progress:0, subText:'', minimal:false}, toast:{show:false, message:''},
         showAddMenu:false, showViewerMenu:false, showBookmarksModal:false, showListSelect:false,
@@ -154,7 +202,7 @@ document.addEventListener('alpine:init', () => {
 
             this.applyTheme();
 
-            // H2Aブリッジはページ読み込み完了後に注入されるため、しばらくポーリングして検出する
+            // さきいかビルダーのブリッジは注入タイミングが前後しうるため、しばらくポーリングして検出する
             this.detectBridge();
 
             this._saveMetaDebounced = _.debounce(() => this.saveMeta(), 500);
@@ -178,6 +226,14 @@ document.addEventListener('alpine:init', () => {
         applyTheme() {
             document.documentElement.style.setProperty('--primary-color', this.settings.accentColor);
             document.body.style.setProperty('--primary-color', this.settings.accentColor);
+            const light = this.settings.theme === 'light';
+            document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+            const meta = document.querySelector('meta[name="theme-color"]');
+            if(meta) meta.setAttribute('content', light ? '#f9f9fb' : '#000000');
+            // アプリ内ではステータスバー/ナビゲーションバーの配色も切り替える
+            if(window.Android && Android.available && Android.ui) {
+                Android.ui.setDark({ dark: !light }).catch(() => {});
+            }
         },
 
         get gridClass() { return 'library-grid ' + (this.settings.thumbSize==='small'?'grid-small':(this.settings.thumbSize==='large'?'grid-large':'')); },
@@ -292,17 +348,13 @@ document.addEventListener('alpine:init', () => {
             try { const blob = await db.files.get(id+'_thumb'); if(blob) this.thumbnails[id] = URL.createObjectURL(blob); } catch(e) {}
         },
 
-        /* ===== ライブラリフォルダ (MedjedBuilder / SAF) ===== */
+        /* ===== ライブラリフォルダ (さきいかビルダー / SAF) ===== */
 
         detectBridge() {
             let tries = 0;
             const check = () => {
-                if(typeof window.H2A !== 'undefined') {
+                if(window.Android && Android.available && Android.fs) {
                     this.hasBridge = true;
-                    window.addEventListener('h2astorage', (e) => {
-                        if(e.detail && e.detail.granted) { this.folderGranted = true; this.scanFolder(); }
-                        else { this.showToast('フォルダが選択されませんでした'); }
-                    });
                     this.initFolder();
                     return;
                 }
@@ -312,13 +364,17 @@ document.addEventListener('alpine:init', () => {
         },
         async initFolder() {
             try {
-                await H2A.list('saf:');
-                this.folderGranted = true;
-                await this.scanFolder();
+                const root = await Android.fs.root();
+                if(root && root.kind === 'tree') { this.folderGranted = true; await this.scanFolder(); }
+                else { this.folderGranted = false; }
             } catch(e) { this.folderGranted = false; }
         },
-        selectFolder() {
-            try { H2A.requestStorage(); } catch(e) { this.showToast('フォルダ選択を開けませんでした'); }
+        async selectFolder() {
+            try {
+                const r = await Android.fs.chooseRoot();
+                if(r && r.ok !== false) { this.folderGranted = true; this.scanFolder(); }
+                else { this.showToast('フォルダが選択されませんでした'); }
+            } catch(e) { this.showToast('フォルダ選択を開けませんでした'); }
         },
         pathId(path) {
             let h = 5381;
@@ -349,32 +405,17 @@ document.addEventListener('alpine:init', () => {
                 this.library = keep.concat(items);
                 this.saveMeta();
                 this.processIndexQueue();
-                this.pruneAlbumCaches();
             } catch(e) { console.error(e); this.showToast('フォルダを読み込めませんでした'); }
             this.folderScanning = false;
         },
         async _walkFolder(dir, found, depth) {
             if(depth > 6) return;
-            const entries = await H2A.list('saf:' + dir);
-            for(const e of entries) {
+            const r = await Android.fs.list({ path: dir });
+            for(const e of (r.entries || [])) {
                 if(!e.name || e.name.startsWith('.')) continue;
                 const p = dir ? dir + '/' + e.name : e.name;
-                if(e.directory) { await this._walkFolder(p, found, depth + 1); }
+                if(e.isDir) { await this._walkFolder(p, found, depth + 1); }
                 else if(LIB_FILE_REGEX.test(e.name)) { found.push({ path: p, name: e.name, size: e.size }); }
-            }
-        },
-        // フォルダから消えたアルバムの展開キャッシュを削除する
-        async pruneAlbumCaches() {
-            const ids = new Set(this.library.map(i => String(i.id)));
-            for(const base of ['albums', 'tracks']) {
-                try {
-                    const dirs = await H2A.list(base);
-                    for(const d of dirs) {
-                        if(d.directory && d.name !== 'single' && !ids.has(d.name)) {
-                            try { await H2A.remove(base + '/' + d.name); } catch(e) {}
-                        }
-                    }
-                } catch(e) { /* キャッシュ未作成なら無視 */ }
             }
         },
         // 新規ファイルの種別判定とサムネイル生成をバックグラウンドで順次行う
@@ -393,7 +434,7 @@ document.addEventListener('alpine:init', () => {
         async indexFolderItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(!['zip','cbz'].includes(ext)) { item.indexed = true; return; }
-            const src = new H2ARandomReader('saf:' + item.path);
+            const src = new SakiikaRandomReader(item.path);
             const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
             try {
                 const es = await r.getEntries();
@@ -439,7 +480,7 @@ document.addEventListener('alpine:init', () => {
         },
         // SAF上のファイル全体をBlobとして読み込む (フォールバック用)
         async readPathBlob(path, mime) {
-            const src = new H2ARandomReader('saf:' + path);
+            const src = new SakiikaRandomReader(path);
             await src.init();
             try {
                 const parts = [];
@@ -447,11 +488,10 @@ document.addEventListener('alpine:init', () => {
                 while(off < src.size) {
                     const len = Math.min(8 * 1024 * 1024, src.size - off);
                     this.loading.progress = (off / src.size) * 100;
-                    const b64 = await H2A.readRandom(src.id, off, len);
-                    if(!b64) break;
-                    const buf = await (await fetch('data:application/octet-stream;base64,' + b64)).arrayBuffer();
-                    parts.push(buf);
-                    off += buf.byteLength;
+                    const part = await src.readUint8Array(off, len);
+                    if(!part.length) break;
+                    parts.push(part);
+                    off += part.length;
                 }
                 return new Blob(parts, { type: mime || '' });
             } finally { await src.dispose(); }
@@ -460,7 +500,7 @@ document.addEventListener('alpine:init', () => {
         async openPathItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(['zip','cbz'].includes(ext)) {
-                const src = new H2ARandomReader('saf:' + item.path);
+                const src = new SakiikaRandomReader(item.path);
                 const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
                 const es = await r.getEntries();
                 this._openSrcReader = src;
@@ -472,9 +512,7 @@ document.addEventListener('alpine:init', () => {
                 } else {
                     this._allAudioEntries = es;
                     this.renderAudioDir("");
-                    // トラック即時再生用にネイティブ展開キャッシュを裏で用意する
                     this._audioAlbum = item;
-                    this.ensureAlbumCache(item);
                 }
                 this.page = 'reels';
             } else if(ext === 'pdf') {
@@ -499,7 +537,7 @@ document.addEventListener('alpine:init', () => {
                 this.loadThumb(item.id);
                 const name = item.path.split('/').pop();
                 let url = null;
-                try { url = await H2A.toUrl('saf:' + item.path); } catch(e) {}
+                try { url = (await Android.fs.stat({ path: item.path })).uri || null; } catch(e) {}
                 this._allAudioEntries = [];
                 this.currentAudioDir = "";
                 this.audioFiles = [{
@@ -689,7 +727,7 @@ document.addEventListener('alpine:init', () => {
                 const item = _.find(this.library, {id: this.editModal.id});
                 let r = null;
                 if(item && item.path && /\.(zip|cbz)$/i.test(item.path)) {
-                    r = new zip.ZipReader(new H2ARandomReader('saf:' + item.path), { filenameEncoding: 'shift-jis' });
+                    r = new zip.ZipReader(new SakiikaRandomReader(item.path), { filenameEncoding: 'shift-jis' });
                 } else {
                     const data = await db.files.get(this.editModal.id);
                     if(data && data.zipBlob) r = createZipReader(data.zipBlob);
@@ -748,70 +786,6 @@ document.addEventListener('alpine:init', () => {
             this.renderAudioDir(p.length > 0 ? p.join('/') + '/' : "");
         },
 
-        // アルバムZIPをアプリ専用領域へネイティブ展開し、トラックを
-        // Base64ブリッジ経由の全読みではなくfile:// URLで即再生できるようにする
-        async ensureAlbumCache(item) {
-            if(!this.hasBridge || !item.path || !window.H2A.extractZipStart) return;
-            const dest = 'albums/' + item.id;
-            const marker = dest + '/.done';
-            try {
-                if(await H2A.exists(marker)) return;
-                if(this._albumExtracting === item.id) return;
-                this._albumExtracting = item.id;
-                const jobId = await H2A.extractZipStart('saf:' + item.path, dest);
-                const poll = async () => {
-                    try {
-                        const st = await H2A.extractZipStatus(jobId);
-                        if(st.done) {
-                            this._albumExtracting = null;
-                            if(!st.error) await H2A.writeText(marker, 'ok');
-                            return;
-                        }
-                        setTimeout(poll, 300);
-                    } catch(e) { this._albumExtracting = null; }
-                };
-                poll();
-            } catch(e) { this._albumExtracting = null; }
-        },
-        // 展開キャッシュにあればfile:// URLを返す (無ければnull)
-        async cachedTrackUrl(f) {
-            if(!this.hasBridge || !f.entry || !this._audioAlbum || !this._audioAlbum.path) return null;
-            try {
-                const cached = 'albums/' + this._audioAlbum.id + '/' + f.full;
-                if(await H2A.exists('albums/' + this._audioAlbum.id + '/.done') && await H2A.exists(cached)) {
-                    return await H2A.toUrl(cached);
-                }
-            } catch(e) {}
-            return null;
-        },
-        // アルバム全体の展開を待たず、タップした1トラックだけを
-        // ZIPローカルヘッダのオフセット指定でネイティブ展開して即再生する
-        async extractSingleTrackUrl(f) {
-            if(!this.hasBridge || !window.H2A.extractZipEntryAt) return null;
-            if(!f.entry || !this._audioAlbum || !this._audioAlbum.path) return null;
-            if(typeof f.entry.offset !== 'number' || typeof f.entry.compressedSize !== 'number') return null;
-            try {
-                const dest = 'tracks/' + this._audioAlbum.id + '/' + f.full;
-                await H2A.extractZipEntryAt(
-                    'saf:' + this._audioAlbum.path,
-                    f.entry.offset,
-                    f.entry.compressedSize,
-                    f.entry.compressionMethod ?? 8,
-                    dest
-                );
-                return await H2A.toUrl(dest);
-            } catch(e) { console.error('entry extract failed:', e); return null; }
-        },
-        // 単体ファイルのフォールバック: ネイティブコピーしてfile://で再生
-        async nativeFileUrl(path) {
-            if(!this.hasBridge || !window.H2A.copyIn) return null;
-            try {
-                const dest = 'tracks/single/' + this.pathId(path) + '_' + path.split('/').pop();
-                await H2A.copyIn('saf:' + path, dest);
-                return await H2A.toUrl(dest);
-            } catch(e) { return null; }
-        },
-
         async playAudioFile(f) {
             if(f.type === 'folder') { this.renderAudioDir(f.full); return; }
             if(f.type === 'file_image') { this.viewImage(f); return; }
@@ -823,15 +797,12 @@ document.addEventListener('alpine:init', () => {
             let url;
             try {
                 if(f.url) {
-                    // MedjedBuilderのcontent URIをそのまま再生 (コピー転送なし)
+                    // 選択フォルダー内ファイルのcontent URIをそのまま再生 (コピー転送なし)
                     url = f.url;
                 } else {
-                    url = await this.cachedTrackUrl(f) || await this.extractSingleTrackUrl(f);
-                    if(!url) {
-                        const b = f.blob || await f.entry.getData(new zip.BlobWriter());
-                        url = URL.createObjectURL(b);
-                        this._trackUrl = url;
-                    }
+                    const b = f.blob || await f.entry.getData(new zip.BlobWriter());
+                    url = URL.createObjectURL(b);
+                    this._trackUrl = url;
                 }
             } catch(e) {
                 console.error(e);
@@ -861,8 +832,6 @@ document.addEventListener('alpine:init', () => {
                     // content URIが再生できない環境ではネイティブコピー→file://で再試行
                     if(f.url && f.path && !f._triedBlob) {
                         f._triedBlob = true;
-                        const nativeUrl = await this.nativeFileUrl(f.path);
-                        if(nativeUrl) { this.playAudioFile(Object.assign({}, f, { url: nativeUrl })); return; }
                         try {
                             this.loading.show = true; this.loading.minimal = false; this.loading.text = "読み込み中...";
                             const blob = await this.readPathBlob(f.path);
@@ -900,7 +869,7 @@ document.addEventListener('alpine:init', () => {
             if(this.currentHowl) { this.currentHowl.stop(); }
             this.loading.show = true;
             try {
-                let url = f.url || await this.cachedTrackUrl(f) || await this.extractSingleTrackUrl(f);
+                let url = f.url;
                 if(!url) {
                     const blob = f.blob || await f.entry.getData(new zip.BlobWriter());
                     if(this._videoUrl) { URL.revokeObjectURL(this._videoUrl); }
@@ -1178,6 +1147,7 @@ document.addEventListener('alpine:init', () => {
         // ネイティブ<select>の代わりに使うiOS風の選択シート
         openPicker(key) {
             const defs = {
+                theme: { title: 'テーマ', options: [['dark','ダーク'],['light','ライト']] },
                 thumbSize: { title: 'サムネイルサイズ', options: [['small','小'],['medium','中'],['large','大']] },
                 accentColor: { title: 'アクセントカラー', options: [['#7bb3d7','ブルー'],['#ff75a0','ピンク'],['#ff453a','レッド'],['#ff9f0a','オレンジ']] },
                 scrollMode: { title: 'スクロール設定', options: [['horizontal','スワイプ'],['vertical','縦スクロール']] },
@@ -1283,7 +1253,7 @@ document.addEventListener('alpine:init', () => {
                     }
                     else {
                         for(const it of pathTargets) {
-                            try { await H2A.remove('saf:' + it.path); } catch(e) { console.error(e); }
+                            try { await Android.fs.delete({ path: it.path, recursive: true }); } catch(e) { console.error(e); }
                         }
                         db.files.bulkDelete(this.selectedIds);
                         this.selectedIds.forEach(id => db.files.delete(id+'_thumb'));
@@ -1306,7 +1276,7 @@ document.addEventListener('alpine:init', () => {
             this.showToast("追加しました");
         },
 
-        getLabel(val) { const map = {'small':'小','medium':'中','large':'大','horizontal':'スワイプ','vertical':'縦スクロール','rtl':'右→左','ltr':'左→右'}; return map[val] || val; },
+        getLabel(val) { const map = {'small':'小','medium':'中','large':'大','horizontal':'スワイプ','vertical':'縦スクロール','rtl':'右→左','ltr':'左→右','dark':'ダーク','light':'ライト'}; return map[val] || val; },
         getColorName(c) { const map = {'#7bb3d7':'ブルー','#ff75a0':'ピンク','#ff453a':'レッド','#ff9f0a':'オレンジ'}; return map[c] || c; },
 
         async calculateStorageUsage() {
@@ -1319,10 +1289,6 @@ document.addEventListener('alpine:init', () => {
 
         deleteAll() {
             this.askConfirm('全データ削除', 'キャッシュ・リスト・設定がすべて削除されます。フォルダ内のファイル本体は削除されません。', { okText: '削除', danger: true, onConfirm: async () => {
-                if(this.hasBridge) {
-                    try { await H2A.remove('albums'); } catch(e) {}
-                    try { await H2A.remove('tracks'); } catch(e) {}
-                }
                 await db.files.clear(); localStorage.clear(); location.reload();
             }});
         },

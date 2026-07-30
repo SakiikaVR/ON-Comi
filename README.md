@@ -53,7 +53,7 @@
 - ZIP 内の画像・テキストファイル（UTF-8 / Shift_JIS 自動判定）の閲覧
 
 ### その他
-- iOS 風ダークデザイン（ダークモード固定）
+- iOS 風デザイン（ダーク / ライトテーマ切り替え）
 - アクセントカラー変更（ブルー / ピンク / レッド / オレンジ）
 - サムネイルサイズ変更（小 / 中 / 大）
 - ストレージ使用量の表示、全データ削除
@@ -104,9 +104,9 @@ sakiika build .\sakiika.json
 | `bridge.enableReflection` | `true` | ZIP のランダムアクセス読み出しのフォールバックに使用 |
 | `webview.htmlFileInput` | `true` | ブラウザ版と同じファイル取り込みにも対応 |
 
-MedjedBuilder の H2A ブリッジに依存していたフォルダアクセス・ZIP ランダムアクセスは、
-互換レイヤー [js/h2a-shim.js](js/h2a-shim.js) がさきいかビルダーのブリッジ (`Android.fs` / `Android.reflect`) へ
-そのまま接続します（`app.js` は無改変）。ブラウザで開いたときはこのシムは何もしません。
+フォルダアクセス・ZIP のランダムアクセス読み出し・content URI 再生は、`app.js` が
+さきいかビルダーのブリッジ (`Android.fs` / `Android.reflect`) をネイティブに使用します。
+ブラウザで開いたときはブリッジを使わない従来のインポート方式で動作します。
 
 詳細な手順は [BUILD_APK.md](BUILD_APK.md) を参照してください。
 
@@ -139,7 +139,6 @@ MedjedBuilder の H2A ブリッジに依存していたフォルダアクセス�
 ├── index.html       # マークアップ
 ├── css/style.css    # スタイル
 ├── js/app.js        # アプリケーションロジック
-├── js/h2a-shim.js   # さきいかビルダー用ブリッジ互換レイヤー
 ├── lib/             # 同梱ライブラリ（オフライン動作用）
 ├── assets/icon.png  # アプリアイコン
 ├── credit.html      # サードパーティライセンス表記

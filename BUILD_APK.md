@@ -50,16 +50,15 @@ sakiika build .\sakiika.json
 | `theme` / 背景 | dark / `#000000` | ダークデザイン固定。起動時からダークテーマ |
 | `splash.enabled` | `false` | スプラッシュなしで瞬時に起動 |
 
-## MedjedBuilder からの移行について
+## ブリッジの使い方 (実装メモ)
 
-アプリ本体 (`js/app.js`) は MedjedBuilder の H2A ブリッジ API（フォルダ一覧・ZIP ランダムアクセス・
-content URI 再生など）を呼び出します。さきいかビルダー版では互換レイヤー
-[js/h2a-shim.js](js/h2a-shim.js) が同じ API をさきいかのブリッジ (`Android.fs` / `Android.reflect`) の上に
-再現するため、**app.js は無改変**です。
+アプリ本体 (`js/app.js`) はさきいかビルダーのブリッジをネイティブに使用します。
 
-- 提供: `requestStorage` / `list` / `exists` / `remove` / `toUrl` / `openRandom` / `readRandom` / `closeRandom`
-- 非提供: `extractZip*` / `copyIn`（ネイティブ ZIP 展開キャッシュ）→ app.js が capability を確認して
-  zip.js による JS 展開へ自動フォールバックします（音声アルバムの初回再生がわずかに遅くなるのみ）
+- フォルダ選択・一覧・削除: `Android.fs.chooseRoot` / `list` / `delete`
+- 音声・動画の直接再生: `Android.fs.stat` の content URI を `<audio>` / `<video>` にそのまま渡す
+- ZIP のランダムアクセス読み出し (`SakiikaRandomReader`): content URI を XHR で Blob 化して
+  必要な範囲だけ読む。XHR が使えない環境では `Android.reflect` の `FileChannel` 位置読みへ
+  自動フォールバック
 
 ## 署名鍵について
 
