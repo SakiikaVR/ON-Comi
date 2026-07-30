@@ -47,7 +47,8 @@ sakiika build .\sakiika.json
 | `bridge.enableReflection` | `true` | ZIP ランダムアクセス読み出しのフォールバック（h2a-shim.js が使用） |
 | `webview.htmlFileInput` | `true` | ブラウザ版と同じ `<input type="file">` 取り込みに対応 |
 | `webview.allowUniversalFileAccess` | `true` | `file://` ページから content URI (選択フォルダ内ファイル) を読むために必要 |
-| `theme` / 背景 | dark / `#000000` | ダークデザイン固定。起動時からダークテーマ |
+| `theme` | `auto` | アプリ内の setDark で保存したバー配色が次回起動時にも復元される (テーマ切替対応) |
+| `darkBackground` / `lightBackground` | `#000000` / `#f9f9fb` | ダーク/ライト各テーマのステータスバー・ナビゲーションバー・WebView 背景色 |
 | `splash.enabled` | `false` | スプラッシュなしで瞬時に起動 |
 
 ## ブリッジの使い方 (実装メモ)
