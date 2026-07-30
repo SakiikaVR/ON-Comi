@@ -1,14 +1,14 @@
 {
   "appName": "オンコミ",
   "packageName": "com.sakiikavr.oncomi",
-  "versionName": "2.2.1",
-  "versionCode": 5,
+  "versionName": "2.3.0",
+  "versionCode": 6,
   "webRoot": "www",
   "entry": "index.html",
   "outputFormat": "apk",
   "minSdk": 28,
   "targetSdk": 34,
-  "orientation": "sensor",
+  "orientation": "unspecified",
   "theme": "auto",
   "fullscreen": false,
   "splash": {

@@ -70,40 +70,91 @@ async function closeReflectChannel(refl) {
 
 /**
  * さきいかビルダーのブリッジで選択フォルダー内のファイルをランダムアクセス読みする
- * zip.js Reader。ファイル全体を転送せず、ZIPの目次や必要なエントリだけを読み出せる。
- * content URI を XHR で Blob 化して読む (Blob はディスクバックで低メモリ)。
- * XHR が使えない環境では reflect の FileChannel 位置読みにフォールバックする。
+ * zip.js Reader。ファイル全体の転送を待たずに読み始められるハイブリッド構成:
+ *   1. reflect の FileChannel 位置読みを即オープン → ZIP の目次など小さな読みは即応
+ *   2. 裏で content URI を XHR で Blob 化 (ディスクバックで低メモリ)。完了後は
+ *      ブリッジを介さないスライス読みに切り替わり、ページ読みが最速になる
+ * opts.noPrefetch: サムネイル作成など少量読みの用途で全体 Blob 取得を行わない
  */
 class SakiikaRandomReader extends zip.Reader {
-    constructor(path) { super(); this.path = path; this.blob = null; this.refl = null; this.size = 0; }
-    async init() {
-        if (this.blob || this.refl) return;
-        const st = await Android.fs.stat({ path: this.path });
-        if (!st || st.isDir || !st.uri) throw new Error('開けません: ' + this.path);
-        this.size = st.size;
-        try {
-            this.blob = await new Promise((resolve, reject) => {
-                const x = new XMLHttpRequest();
-                x.open('GET', st.uri, true);
-                x.responseType = 'blob';
-                x.onload = () => (x.response && x.response.size > 0) ? resolve(x.response) : reject(new Error('empty response'));
-                x.onerror = () => reject(new Error('xhr error'));
-                x.send();
-            });
-            this.size = this.blob.size;
-        } catch (e) {
-            this.refl = await openReflectChannel(st.uri);
-            if (this.refl.size > 0) this.size = this.refl.size;
-        }
+    constructor(path, opts) {
+        super();
+        this.path = path; this.opts = opts || {};
+        this.blob = null; this.refl = null; this.size = 0;
+        this._ready = null; this._blobPromise = null; this._xhr = null;
+    }
+    init() {
+        if (this._ready) return this._ready;
+        this._ready = (async () => {
+            const st = await Android.fs.stat({ path: this.path });
+            if (!st || st.isDir || !st.uri) throw new Error('開けません: ' + this.path);
+            this.size = st.size;
+            try {
+                this.refl = await openReflectChannel(st.uri);
+                if (this.refl.size > 0) this.size = this.refl.size;
+            } catch (e) { this.refl = null; }
+            if (!this.opts.noPrefetch || !this.refl) {
+                this._blobPromise = new Promise((resolve) => {
+                    try {
+                        const x = new XMLHttpRequest();
+                        this._xhr = x;
+                        x.open('GET', st.uri, true);
+                        x.responseType = 'blob';
+                        x.onload = () => {
+                            this._xhr = null;
+                            if (x.response && x.response.size > 0) { this.blob = x.response; this.size = this.blob.size; resolve(this.blob); }
+                            else resolve(null);
+                        };
+                        x.onerror = () => { this._xhr = null; resolve(null); };
+                        x.onabort = () => { this._xhr = null; resolve(null); };
+                        x.send();
+                    } catch (e) { this._xhr = null; resolve(null); }
+                });
+                if (!this.refl) {
+                    const b = await this._blobPromise;
+                    if (!b) throw new Error('開けません: ' + this.path);
+                }
+            }
+        })();
+        return this._ready;
     }
     async readUint8Array(index, length) {
         await this.init();
+        if (!this.blob && !this.refl && this._blobPromise) await this._blobPromise;
         if (index >= this.size) return new Uint8Array(0);
         const len = Math.min(length, this.size - index);
         if (this.blob) return new Uint8Array(await this.blob.slice(index, index + len).arrayBuffer());
-        return reflectRead(this.refl, index, len);
+        if (this.refl) return reflectRead(this.refl, index, len);
+        throw new Error('開けません: ' + this.path);
     }
-    async dispose() { if (this.refl) { try { await closeReflectChannel(this.refl); } catch (e) {} this.refl = null; } this.blob = null; }
+    /* ファイル全体を Blob で取得 (PDF など)。XHR の進捗も通知する */
+    async whole(onProgress) {
+        await this.init();
+        if (this.blob) return this.blob;
+        if (this._blobPromise) {
+            if (this._xhr && onProgress) {
+                this._xhr.onprogress = (e) => { if (e.total) onProgress(e.loaded / e.total * 100); };
+            }
+            const b = await this._blobPromise;
+            if (b) return b;
+        }
+        const parts = [];
+        let off = 0;
+        while (off < this.size) {
+            const len = Math.min(8 * 1024 * 1024, this.size - off);
+            if (onProgress) onProgress(off / this.size * 100);
+            const part = await this.readUint8Array(off, len);
+            if (!part.length) break;
+            parts.push(part);
+            off += part.length;
+        }
+        return new Blob(parts);
+    }
+    async dispose() {
+        if (this._xhr) { try { this._xhr.abort(); } catch (e) {} this._xhr = null; }
+        if (this.refl) { try { await closeReflectChannel(this.refl); } catch (e) {} this.refl = null; }
+        this.blob = null;
+    }
 }
 
 const MEDIA_REGEX = /\.(mp3|wav|ogg|oga|m4a|flac|aac|opus|mp4|webm|m4v|mov)$/i;
@@ -434,7 +485,8 @@ document.addEventListener('alpine:init', () => {
         async indexFolderItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(!['zip','cbz'].includes(ext)) { item.indexed = true; return; }
-            const src = new SakiikaRandomReader(item.path);
+            // サムネイル作成は目次と先頭画像しか読まないため、全体の先読みはしない
+            const src = new SakiikaRandomReader(item.path, { noPrefetch: true });
             const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
             try {
                 const es = await r.getEntries();
@@ -478,22 +530,13 @@ document.addEventListener('alpine:init', () => {
                 return out || blob;
             } catch(e) { return blob; }
         },
-        // SAF上のファイル全体をBlobとして読み込む (フォールバック用)
+        // SAF上のファイル全体をBlobとして読み込む (PDFなど)
         async readPathBlob(path, mime) {
             const src = new SakiikaRandomReader(path);
             await src.init();
             try {
-                const parts = [];
-                let off = 0;
-                while(off < src.size) {
-                    const len = Math.min(8 * 1024 * 1024, src.size - off);
-                    this.loading.progress = (off / src.size) * 100;
-                    const part = await src.readUint8Array(off, len);
-                    if(!part.length) break;
-                    parts.push(part);
-                    off += part.length;
-                }
-                return new Blob(parts, { type: mime || '' });
+                const blob = await src.whole(p => { this.loading.progress = p; });
+                return mime ? new Blob([blob], { type: mime }) : blob;
             } finally { await src.dispose(); }
         },
 
@@ -727,7 +770,7 @@ document.addEventListener('alpine:init', () => {
                 const item = _.find(this.library, {id: this.editModal.id});
                 let r = null;
                 if(item && item.path && /\.(zip|cbz)$/i.test(item.path)) {
-                    r = new zip.ZipReader(new SakiikaRandomReader(item.path), { filenameEncoding: 'shift-jis' });
+                    r = new zip.ZipReader(new SakiikaRandomReader(item.path, { noPrefetch: true }), { filenameEncoding: 'shift-jis' });
                 } else {
                     const data = await db.files.get(this.editModal.id);
                     if(data && data.zipBlob) r = createZipReader(data.zipBlob);
@@ -1070,9 +1113,12 @@ document.addEventListener('alpine:init', () => {
             const token = this._viewerToken;
             const active = this.swiper.activeIndex;
             const total = this.slideCount();
-            // 現在→次→前→2つ先→2つ前 の優先順で読み込む
+            // 現在→進行方向→逆方向 の優先順で読み込む (めくった向きを優先して先読み)
+            const dir = (this._lastActiveSlide !== undefined && active < this._lastActiveSlide) ? -1 : 1;
+            this._lastActiveSlide = active;
+            const offs = dir >= 0 ? [0, 1, -1, 2, 3, -2] : [0, -1, 1, -2, -3, 2];
             const want = [];
-            for(const off of [0, 1, -1, 2, -2]) {
+            for(const off of offs) {
                 const s = active + off;
                 if(s < 0 || s >= total) continue;
                 this.pagesForSlide(s).forEach(p => { if(!want.includes(p)) want.push(p); });
