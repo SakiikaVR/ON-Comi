@@ -264,6 +264,7 @@ async function extractEntryProgressive(reader, entry, { headBytes, onHead, onPro
                 push(value);
             }
         })();
+        pump.catch(() => {});   // 中断時に未処理rejectを残さない
         let off = start;
         try {
             while (off < end) {
@@ -274,7 +275,11 @@ async function extractEntryProgressive(reader, entry, { headBytes, onHead, onPro
                 await writer.write(part); off += part.length;
             }
             await writer.close();
-        } catch (e) { try { writer.abort(); } catch (e2) {} throw e; }
+        } catch (e) {
+            try { writer.abort(); } catch (e2) {}
+            try { rdr.cancel(); } catch (e2) {}
+            throw e;
+        }
         await pump;
     }
     flush();
@@ -624,8 +629,10 @@ document.addEventListener('alpine:init', () => {
         async indexFolderItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(ext === 'pdf') {
-                // PDF は 1 ページ目を描画してサムネイルにする
+                // PDF は 1 ページ目を描画してサムネイルにする (巨大PDFはメモリ保護のためスキップ)
                 try {
+                    const st = await Android.fs.stat({ path: item.path });
+                    if(st && st.size > 120 * 1024 * 1024) { item.indexed = true; return; }
                     const blob = await this.readPathBlob(item.path, 'application/pdf');
                     const pdf = await pdfjsLib.getDocument({ data: await blob.arrayBuffer() }).promise;
                     const pageBlob = await this.renderPdfPage(pdf, 1);
@@ -1006,10 +1013,22 @@ document.addEventListener('alpine:init', () => {
                 remaining.delete(entry.filename);
                 if(this._trackCache[entry.filename]) continue;
                 try {
-                    const blob = await entry.getData(new zip.BlobWriter());
+                    // 中断可能な展開: アルバムを閉じた/タップ展開が始まったら即座に打ち切り、
+                    // 巨大トラックのゾンビ展開で端末が重くなるのを防ぐ
+                    const rdr = this._openSrcReader;
+                    const blob = rdr
+                        ? await extractEntryProgressive(rdr, entry, {
+                            isAlive: () => token === this._albumCacheToken && !this._onDemandExtracting
+                          })
+                        : await entry.getData(new zip.BlobWriter());
                     if(token !== this._albumCacheToken) return;
                     this._trackCache[entry.filename] = blob;
-                } catch(e) {}
+                } catch(e) {
+                    // タップ優先で中断された場合はキューへ戻して後で再開する
+                    if(token === this._albumCacheToken && !this._trackCache[entry.filename]) {
+                        remaining.set(entry.filename, entry);
+                    }
+                }
             }
         },
         // 「次に再生されそうなトラック」= プレイリスト上の次曲を裏キャッシュの優先対象にする
@@ -1100,10 +1119,14 @@ document.addEventListener('alpine:init', () => {
                         // 残りは同じストリームで裏展開 → 完了後に自然なタイミングで全体版へ差し替える
                         b = await this.startProgressiveTrack(f);
                     } else if(!b) {
-                        // タップされたトラックを最優先で展開する (裏のキャッシュ展開は一時停止・画面は塞がない)
+                        // タップされたトラックを最優先で展開する (裏のキャッシュ展開は一時停止・画面は塞がない)。
+                        // 別トラックへ移ったら中断してゾンビ展開を残さない
                         this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
                         try {
-                            b = await f.entry.getData(new zip.BlobWriter());
+                            const rdr = this._openSrcReader;
+                            b = (rdr && f.entry && typeof f.entry.offset === 'number')
+                                ? await extractEntryProgressive(rdr, f.entry, { isAlive: () => this._playTarget === f.full })
+                                : await f.entry.getData(new zip.BlobWriter());
                         } finally {
                             this._onDemandExtracting--;
                         }
@@ -1186,7 +1209,6 @@ document.addEventListener('alpine:init', () => {
 
         async playVideo(f) {
             if(this.currentHowl) { this.currentHowl.stop(); }
-            this.loading.show = true;
             try {
                 let url = f.url;
                 if(!url) {
@@ -1226,9 +1248,6 @@ document.addEventListener('alpine:init', () => {
         },
 
         async viewImage(f) {
-            this.loading.show = true;
-            this.loading.minimal = false;
-            this.loading.text = "読み込み中...";
             try {
                 const blob = await f.entry.getData(new zip.BlobWriter());
                 this.imageViewer.src = URL.createObjectURL(blob);
@@ -1238,9 +1257,6 @@ document.addEventListener('alpine:init', () => {
         },
 
         async viewText(f) {
-            this.loading.show = true;
-            this.loading.minimal = false;
-            this.loading.text = "読み込み中...";
             try {
                 const data = await f.entry.getData(new zip.Uint8ArrayWriter());
                 let text = "";
@@ -1274,12 +1290,17 @@ document.addEventListener('alpine:init', () => {
                 const d = this.currentHowl.duration();
                 if (d && d !== this.audioDuration) this.audioDuration = d;
                 // 部分再生の終端が近づいたら、全体版へ位置を引き継いで差し替える
-                if(this._partialInfo && this._partialInfo.full === this.currentTrack && this._pendingFullSwap
-                    && this._partialInfo.coverage > 0 && typeof t === 'number' && t > this._partialInfo.coverage - 12) {
-                    this.maybeSwapToFull();
-                }
+                try {
+                    if(this._partialInfo && this._partialInfo.full === this.currentTrack && this._pendingFullSwap
+                        && this._partialInfo.coverage > 0 && typeof t === 'number' && t > this._partialInfo.coverage - 12) {
+                        this.maybeSwapToFull();
+                    }
+                } catch(e) { console.error(e); }
+                requestAnimationFrame(() => this.step());
+            } else {
+                // 一時停止中は低頻度で監視 (常時60fpsのループを回さない)
+                setTimeout(() => this.step(), 250);
             }
-            requestAnimationFrame(() => this.step());
         },
         togglePlay() { if(this.currentHowl) { this.currentHowl.playing() ? this.currentHowl.pause() : this.currentHowl.play(); } },
         seekAudio(v) {

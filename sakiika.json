@@ -1,8 +1,8 @@
 {
   "appName": "オンコミ",
   "packageName": "com.sakiikavr.oncomi",
-  "versionName": "2.8.0",
-  "versionCode": 12,
+  "versionName": "2.8.1",
+  "versionCode": 13,
   "webRoot": "www",
   "entry": "index.html",
   "outputFormat": "apk",
