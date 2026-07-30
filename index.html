@@ -268,10 +268,16 @@
             <button id="viewer-menu-btn" @click.stop="showViewerMenu=true"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
             <div class="swiper" id="main-swiper"><div class="swiper-wrapper"></div></div>
         </div>
-        <div id="audio-browser-ui" x-show="currentItem?.type==='audio' || currentItem?.type==='album'">
+    </div>
+
+    <div id="audio-page" class="page" :class="{'active': page==='audio'}">
+        <div id="audio-empty-state" x-show="!currentAudioItem">
+            <div x-html="ICONS.audio" style="width:48px;height:48px;"></div><div>コンテンツ未選択</div>
+        </div>
+        <div id="audio-browser-ui" x-show="currentAudioItem">
             <div class="album-header">
                 <button @click="audioBack()" class="back-btn"><svg viewBox="0 0 24 24" class="svg-icon"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg></button>
-                <div class="album-title-area"><h2 x-text="currentItem?.title"></h2><p x-text="currentItem?.author || '不明'"></p></div>
+                <div class="album-title-area"><h2 x-text="currentAudioItem?.title"></h2><p x-text="currentAudioItem?.author || '不明'"></p></div>
             </div>
             <div id="file-list">
                 <div x-show="audioFiles.length === 0" style="padding:40px;text-align:center;color:var(--sub-text-color);">フォルダは空です</div>
@@ -285,12 +291,12 @@
             <div id="sticky-player">
                 <div class="player-now">
                     <div class="player-art">
-                        <template x-if="currentItem && thumbnails[currentItem.id]"><img :src="thumbnails[currentItem.id]"></template>
-                        <template x-if="!(currentItem && thumbnails[currentItem.id])"><div x-html="ICONS.audio"></div></template>
+                        <template x-if="currentAudioItem && thumbnails[currentAudioItem.id]"><img :src="thumbnails[currentAudioItem.id]"></template>
+                        <template x-if="!(currentAudioItem && thumbnails[currentAudioItem.id])"><div x-html="ICONS.audio"></div></template>
                     </div>
                     <div class="player-meta">
                         <div class="player-status" x-text="currentTrackName || '再生していません'"></div>
-                        <div class="player-sub" x-text="currentTrackName ? (currentItem?.title || '') : '曲を選んで再生'"></div>
+                        <div class="player-sub" x-text="currentTrackName ? (currentAudioItem?.title || '') : '曲を選んで再生'"></div>
                     </div>
                 </div>
                 <div class="progress-container">
@@ -470,6 +476,7 @@
     <nav class="bottom-nav" x-show="!selectionMode">
         <div class="nav-item" :class="{'active':page==='home'}" @click="page='home'"><div x-html="ICONS.book" style="width:24px;"></div><span>ホーム</span></div>
         <div class="nav-item" :class="{'active':page==='reels'}" @click="page='reels'"><svg viewBox="0 0 24 24" fill="currentColor" width="24"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>再生</span></div>
+        <div class="nav-item" :class="{'active':page==='audio'}" @click="page='audio'"><div x-html="ICONS.audio" style="width:24px;"></div><span>音声</span></div>
         <div class="nav-item" :class="{'active':page==='lists'}" @click="page='lists'"><div x-html="ICONS.folder" style="width:24px;"></div><span>リスト</span></div>
         <div class="nav-item" :class="{'active':page==='profile'}" @click="page='profile'"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg><span>設定</span></div>
     </nav>

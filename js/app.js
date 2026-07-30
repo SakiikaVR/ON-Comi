@@ -358,7 +358,7 @@ document.addEventListener('alpine:init', () => {
         promptData: { show:false, title:'', inputValue:'', onConfirm:null, confirm() { if(this.inputValue.trim()) { this.onConfirm(this.inputValue.trim()); } this.show=false; this.inputValue=''; } },
         confirmData: { show:false, title:'', message:'', okText:'OK', danger:false, onConfirm:null },
         sheetData: { show:false, title:'', actions:[] },
-        storageSize: '', currentItem:null, currentList:null,
+        storageSize: '', currentItem:null, currentAudioItem:null, currentList:null,
         hasBridge:false, folderGranted:false, folderScanning:false,
         thumbnails: {},
         viewerPage:0, viewerTotal:0, swiper:null,
@@ -699,6 +699,32 @@ document.addEventListener('alpine:init', () => {
             } finally { await src.dispose(); }
         },
 
+        /* ---- 漫画側の読み込み元だけを破棄する (音声の再生・展開には触れない) ---- */
+        async closeBookSource() {
+            if(this._openSrcReader) { const r = this._openSrcReader; this._openSrcReader = null; try { await r.dispose(); } catch(e) {} }
+            if(this._openZipReader) { try { await this._openZipReader.close(); } catch(e) {} this._openZipReader = null; }
+            if(this._openPdfDoc) { try { this._openPdfDoc.destroy(); } catch(e) {} this._openPdfDoc = null; }
+        },
+        /* ---- 音声側の再生・キャッシュ・読み込み元だけを破棄する ---- */
+        async closeAudioSource() {
+            this._albumCacheToken = (this._albumCacheToken || 0) + 1;
+            this._trackCache = {};
+            this._partialInfo = null; this._pendingFullSwap = null;
+            this._resumeAt = null; this._awaitFullResume = false;
+            this._cachePriority = null; this._playTarget = null;
+            if(this.currentHowl) { try { this.currentHowl.unload(); } catch(e) {} this.currentHowl = null; }
+            if(this._trackUrl) { URL.revokeObjectURL(this._trackUrl); this._trackUrl = null; }
+            this.playing = false;
+            this.playlist = [];
+            this._audioAlbum = null;
+            this._allAudioEntries = [];
+            if(this._audioZipReader) { try { await this._audioZipReader.close(); } catch(e) {} this._audioZipReader = null; }
+            if(this._audioSrcReader) {
+                // 先に参照を外して進行中の展開を isAlive 判定で確実に止めてから破棄する
+                const r = this._audioSrcReader; this._audioSrcReader = null;
+                try { await r.dispose(); } catch(e) {}
+            }
+        },
         async openPathItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(['zip','cbz'].includes(ext)) {
@@ -706,27 +732,35 @@ document.addEventListener('alpine:init', () => {
                 const src = new SakiikaRandomReader(item.path, { noPrefetch: true });
                 const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
                 const es = await r.getEntries();
-                this._openSrcReader = src;
                 // 未インデックスでも正しく開けるよう、中身から種別を確定する
                 const hasMedia = es.some(x => !x.directory && MEDIA_REGEX.test(x.filename));
                 const kind = hasMedia ? 'audio' : 'book';
                 if(item.type !== kind) { item.type = kind; this.saveMeta(); }
                 if(kind === 'book') {
+                    await this.closeBookSource();
+                    this._openSrcReader = src;
+                    this.currentItem = item;
                     src.startPrefetch();   // 漫画はランダムアクセスが主なので全体 Blob 化が最速
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX))
                         .sort((a,b) => a.filename.localeCompare(b.filename, undefined, {numeric:true}));
                     this.initViewer(imgs.length, (i) => imgs[i].getData(new zip.BlobWriter()));
                     this._viewerDirty = false;
+                    this.page = 'reels';
                 } else {
+                    await this.closeAudioSource();
+                    this._audioSrcReader = src;
+                    this.currentAudioItem = item;
                     // 音声: 巨大な作品はファイル全体の複製を作らず reflect 直読みで展開する
                     if(src.size <= 1.5 * 1024 * 1024 * 1024) src.startPrefetch();
                     this._allAudioEntries = es;
                     this.renderAudioDir("");
                     this._audioAlbum = item;
                     this.cacheAlbumTracks();
+                    this.page = 'audio';
                 }
-                this.page = 'reels';
             } else if(ext === 'pdf') {
+                await this.closeBookSource();
+                this.currentItem = item;
                 const blob = await this.readPathBlob(item.path, 'application/pdf');
                 const pdf = await pdfjsLib.getDocument({ data: await blob.arrayBuffer() }).promise;
                 this._openPdfDoc = pdf;
@@ -743,46 +777,34 @@ document.addEventListener('alpine:init', () => {
                 this.page = 'reels';
             } else {
                 // 単体の音声/動画ファイル: content URIで直接再生する
+                await this.closeAudioSource();
+                this.currentAudioItem = item;
                 this.loadThumb(item.id);
                 const name = item.path.split('/').pop();
                 let url = null;
                 try { url = (await Android.fs.stat({ path: item.path })).uri || null; } catch(e) {}
-                this._allAudioEntries = [];
                 this.currentAudioDir = "";
                 this.audioFiles = [{
                     type: VIDEO_REGEX.test(name) ? 'file_video' : 'file_audio',
                     name, full: 'saf_' + item.id, url, path: item.path
                 }];
-                this.page = 'reels';
+                this.page = 'audio';
             }
         },
 
         async handleClick(item) { if(this.ignoreClick) return; if(this.selectionMode) { this.selectedIds = _.xor(this.selectedIds, [item.id]); } else { this.openItem(item); } },
         async openItem(item) {
-            this.currentItem = item;
-            // 作品を開くときの読み込み表示は出さない (目次読みだけで開けるため)
-
+            // 作品を開くときの読み込み表示は出さない (目次読みだけで開けるため)。
+            // 漫画と音声は状態を完全分離しており、互いの読み込み元や展開を巻き込まない
             try {
-                this._albumCacheToken = (this._albumCacheToken || 0) + 1;
-                this._trackCache = {};
-                this._partialInfo = null; this._pendingFullSwap = null;
-                this._resumeAt = null; this._awaitFullResume = false;
-                if(this._openSrcReader) {
-                    await this._openSrcReader.dispose();
-                    this._openSrcReader = null;
-                    // 破棄したZIPに紐づくトラックは読めないため自動送りの対象から外す
-                    if(this.playlist) this.playlist = this.playlist.filter(t => t.blob || t.url);
-                }
-                if(this._openZipReader) { try { await this._openZipReader.close(); } catch(e) {} this._openZipReader = null; }
-                if(this._openPdfDoc) { try { this._openPdfDoc.destroy(); } catch(e) {} this._openPdfDoc = null; }
-                this._audioAlbum = null;
                 if(item.path) {
                     await this.openPathItem(item);
-                    this.loading.show = false;
                     return;
                 }
                 const data = await db.files.get(item.id);
                 if(item.isPdf && data.pdfBlob) {
+                    await this.closeBookSource();
+                    this.currentItem = item;
                     this.showToast("古い形式のPDFです。再インポートすると高速化されます");
                     const arrayBuffer = await data.pdfBlob.arrayBuffer();
                     const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
@@ -791,6 +813,8 @@ document.addEventListener('alpine:init', () => {
                     this.page = 'reels';
                 }
                 else if(item.type === 'book' && data.zipBlob) {
+                    await this.closeBookSource();
+                    this.currentItem = item;
                     const r = createZipReader(data.zipBlob);
                     const es = await r.getEntries();
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX)).sort((a,b)=>a.filename.localeCompare(b.filename, undefined, {numeric:true}));
@@ -798,26 +822,27 @@ document.addEventListener('alpine:init', () => {
                     this.initViewer(imgs.length, (i) => imgs[i].getData(new zip.BlobWriter()));
                     this.page = 'reels';
                 } else {
+                    await this.closeAudioSource();
+                    this.currentAudioItem = item;
                     this.loadThumb(item.id);
                     if(data && data.zipBlob) {
                         const r = createZipReader(data.zipBlob);
                         const es = await r.getEntries();
-                        this._openZipReader = r;
+                        this._audioZipReader = r;
                         this._allAudioEntries = es;
+                        this._audioAlbum = item;
                         this.renderAudioDir("");
                         this.cacheAlbumTracks();
                     } else if(data instanceof Blob) {
                         // ZIPではない単体の音声/動画ファイル
-                        this._allAudioEntries = [];
                         this.currentAudioDir = "";
                         const fname = data.name || item.title;
                         const isVideo = (data.type || '').startsWith('video') || /\.(mp4|webm|m4v|mov)$/i.test(fname);
                         this.audioFiles = [{ type: isVideo ? 'file_video' : 'file_audio', name: fname, full: 'single_' + item.id, blob: data }];
                     }
-                    this.page = 'reels';
+                    this.page = 'audio';
                 }
             } catch(e) { console.error(e); this.showToast("読み込みエラーが発生しました"); }
-            this.loading.show = false;
         },
 
         selectAll() { this.selectedIds = (this.page === 'lists' && this.currentList) ? this.getListItems().map(i => i.id) : this.filteredLibrary.map(i => i.id); },
@@ -1015,7 +1040,7 @@ document.addEventListener('alpine:init', () => {
                 try {
                     // 中断可能な展開: アルバムを閉じた/タップ展開が始まったら即座に打ち切り、
                     // 巨大トラックのゾンビ展開で端末が重くなるのを防ぐ
-                    const rdr = this._openSrcReader;
+                    const rdr = this._audioSrcReader;
                     const blob = rdr
                         ? await extractEntryProgressive(rdr, entry, {
                             isAlive: () => token === this._albumCacheToken && !this._onDemandExtracting
@@ -1043,7 +1068,7 @@ document.addEventListener('alpine:init', () => {
         // WAV ストリーミング再生の開始: 先頭ブロックの展開完了で部分Blobを返し、
         // 残りは裏で展開を続けて完了後に _pendingFullSwap へ積む
         async startProgressiveTrack(f) {
-            const reader = this._openSrcReader;
+            const reader = this._audioSrcReader;
             const entry = f.entry;
             const token = this._albumCacheToken || 0;
             this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
@@ -1053,7 +1078,7 @@ document.addEventListener('alpine:init', () => {
                 headBytes: 12 * 1024 * 1024,
                 // アルバムが閉じられたか、別トラックへ移ったら展開を中断する (多重展開の暴走防止)
                 isAlive: () => (this._albumCacheToken || 0) === token
-                    && this._openSrcReader === reader && this._playTarget === f.full,
+                    && this._audioSrcReader === reader && this._playTarget === f.full,
                 onHead: (blob, wavMeta) => {
                     if(this._playTarget === f.full && blob.size < entry.uncompressedSize) {
                         let coverage = 0;
@@ -1113,7 +1138,7 @@ document.addEventListener('alpine:init', () => {
                 } else {
                     const cached = (f.entry && this._trackCache) ? this._trackCache[f.entry.filename] : null;
                     let b = f.blob || cached;
-                    if(!b && f.entry && this._openSrcReader && /\.wav$/i.test(f.name)
+                    if(!b && f.entry && this._audioSrcReader && /\.wav$/i.test(f.name)
                         && typeof f.entry.offset === 'number' && typeof f.entry.compressedSize === 'number') {
                         // WAV ストリーミング再生: 先頭 (約1分強) だけ展開して即再生し、
                         // 残りは同じストリームで裏展開 → 完了後に自然なタイミングで全体版へ差し替える
@@ -1123,7 +1148,7 @@ document.addEventListener('alpine:init', () => {
                         // 別トラックへ移ったら中断してゾンビ展開を残さない
                         this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
                         try {
-                            const rdr = this._openSrcReader;
+                            const rdr = this._audioSrcReader;
                             b = (rdr && f.entry && typeof f.entry.offset === 'number')
                                 ? await extractEntryProgressive(rdr, f.entry, { isAlive: () => this._playTarget === f.full })
                                 : await f.entry.getData(new zip.BlobWriter());
@@ -1193,11 +1218,11 @@ document.addEventListener('alpine:init', () => {
         updateMediaSession() {
             if(!('mediaSession' in navigator)) return;
             try {
-                const art = this.currentItem ? this.thumbnails[this.currentItem.id] : null;
+                const art = this.currentAudioItem ? this.thumbnails[this.currentAudioItem.id] : null;
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: this.currentTrackName,
-                    artist: (this.currentItem?.author && this.currentItem.author !== '不明') ? this.currentItem.author : '',
-                    album: this.currentItem?.title || '',
+                    artist: (this.currentAudioItem?.author && this.currentAudioItem.author !== '不明') ? this.currentAudioItem.author : '',
+                    album: this.currentAudioItem?.title || '',
                     artwork: art ? [{ src: art, sizes: '512x512' }] : []
                 });
                 navigator.mediaSession.setActionHandler('play', () => this.togglePlay());
