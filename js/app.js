@@ -89,27 +89,13 @@ class SakiikaRandomReader extends zip.Reader {
             const st = await Android.fs.stat({ path: this.path });
             if (!st || st.isDir || !st.uri) throw new Error('開けません: ' + this.path);
             this.size = st.size;
+            this._uri = st.uri;
             try {
                 this.refl = await openReflectChannel(st.uri);
                 if (this.refl.size > 0) this.size = this.refl.size;
             } catch (e) { this.refl = null; }
             if (!this.opts.noPrefetch || !this.refl) {
-                this._blobPromise = new Promise((resolve) => {
-                    try {
-                        const x = new XMLHttpRequest();
-                        this._xhr = x;
-                        x.open('GET', st.uri, true);
-                        x.responseType = 'blob';
-                        x.onload = () => {
-                            this._xhr = null;
-                            if (x.response && x.response.size > 0) { this.blob = x.response; this.size = this.blob.size; resolve(this.blob); }
-                            else resolve(null);
-                        };
-                        x.onerror = () => { this._xhr = null; resolve(null); };
-                        x.onabort = () => { this._xhr = null; resolve(null); };
-                        x.send();
-                    } catch (e) { this._xhr = null; resolve(null); }
-                });
+                this.startPrefetch();
                 if (!this.refl) {
                     const b = await this._blobPromise;
                     if (!b) throw new Error('開けません: ' + this.path);
@@ -118,13 +104,48 @@ class SakiikaRandomReader extends zip.Reader {
         })();
         return this._ready;
     }
+    /* ファイル全体の Blob 先読みを開始する (完了後はブリッジ不要のスライス読みに切替) */
+    startPrefetch() {
+        if (this._blobPromise || this.blob || !this._uri) return this._blobPromise;
+        this._blobPromise = new Promise((resolve) => {
+            try {
+                const x = new XMLHttpRequest();
+                this._xhr = x;
+                x.open('GET', this._uri, true);
+                x.responseType = 'blob';
+                x.onload = () => {
+                    this._xhr = null;
+                    if (x.response && x.response.size > 0) { this.blob = x.response; this.size = this.blob.size; resolve(this.blob); }
+                    else resolve(null);
+                };
+                x.onerror = () => { this._xhr = null; resolve(null); };
+                x.onabort = () => { this._xhr = null; resolve(null); };
+                x.send();
+            } catch (e) { this._xhr = null; resolve(null); }
+        });
+        return this._blobPromise;
+    }
     async readUint8Array(index, length) {
         await this.init();
         if (!this.blob && !this.refl && this._blobPromise) await this._blobPromise;
         if (index >= this.size) return new Uint8Array(0);
         const len = Math.min(length, this.size - index);
         if (this.blob) return new Uint8Array(await this.blob.slice(index, index + len).arrayBuffer());
-        if (this.refl) return reflectRead(this.refl, index, len);
+        if (this.refl) {
+            /* 逐次読み (zip.js の展開) を想定した投機的ダブルバッファ:
+               大きなチャンクを渡している間に次のチャンクをブリッジで先行読みする */
+            let cur;
+            if (this._spec && this._spec.index === index && this._spec.length === len) cur = this._spec.p;
+            else cur = reflectRead(this.refl, index, len);
+            this._spec = null;
+            const nIdx = index + len;
+            if (len >= 1024 * 1024 && nIdx < this.size) {
+                const nLen = Math.min(length, this.size - nIdx);
+                this._spec = { index: nIdx, length: nLen, p: reflectRead(this.refl, nIdx, nLen) };
+                this._spec.p.catch(() => {});
+            }
+            return cur;
+        }
         throw new Error('開けません: ' + this.path);
     }
     /* ファイル全体を Blob で取得 (PDF など)。XHR の進捗も通知する */
@@ -151,6 +172,7 @@ class SakiikaRandomReader extends zip.Reader {
         return new Blob(parts);
     }
     async dispose() {
+        this._spec = null;
         if (this._xhr) { try { this._xhr.abort(); } catch (e) {} this._xhr = null; }
         if (this.refl) { try { await closeReflectChannel(this.refl); } catch (e) {} this.refl = null; }
         this.blob = null;
@@ -543,16 +565,20 @@ document.addEventListener('alpine:init', () => {
         async openPathItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(['zip','cbz'].includes(ext)) {
-                const src = new SakiikaRandomReader(item.path);
+                // まず目次だけを reflect で即読みし、全体先読みの要否は種別とサイズで決める
+                const src = new SakiikaRandomReader(item.path, { noPrefetch: true });
                 const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
                 const es = await r.getEntries();
                 this._openSrcReader = src;
                 if(item.type === 'book') {
+                    src.startPrefetch();   // 漫画はランダムアクセスが主なので全体 Blob 化が最速
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX))
                         .sort((a,b) => a.filename.localeCompare(b.filename, undefined, {numeric:true}));
                     this.initViewer(imgs.length, (i) => imgs[i].getData(new zip.BlobWriter()));
                     this._viewerDirty = false;
                 } else {
+                    // 音声: 巨大な作品はファイル全体の複製を作らず reflect 直読みで展開する
+                    if(src.size <= 1.5 * 1024 * 1024 * 1024) src.startPrefetch();
                     this._allAudioEntries = es;
                     this.renderAudioDir("");
                     this._audioAlbum = item;
@@ -833,24 +859,22 @@ document.addEventListener('alpine:init', () => {
             this.renderAudioDir(p.length > 0 ? p.join('/') + '/' : "");
         },
 
-        // 音声アルバムの全トラックを裏で展開キャッシュし、どのトラックを選んでも即再生できるようにする
+        // 音声アルバムの全トラックを裏で展開キャッシュし、どのトラックを選んでも即再生できるようにする。
+        // 全体先読みの完了は待たず、開いた直後から表示順に展開を始める。
+        // ユーザーがトラックをタップしたときは、そのオンデマンド展開を優先して裏の展開を一時停止する。
         async cacheAlbumTracks() {
             const token = this._albumCacheToken = (this._albumCacheToken || 0) + 1;
-            const reader = this._openSrcReader;
             const entries = _.filter(this._allAudioEntries || [],
                 e => !e.directory && MEDIA_REGEX.test(e.filename) && !VIDEO_REGEX.test(e.filename));
             this._trackCache = {};
             if(entries.length === 0) return;
-            if(reader) {
-                try {
-                    // 全体の先読み完了を待ってから展開する (ファイルを二重に読まない)
-                    await reader.init();
-                    if(reader._blobPromise) await reader._blobPromise;
-                } catch(e) { return; }
-            }
             for(const entry of entries) {
                 if(token !== this._albumCacheToken) return;
                 if(this._trackCache[entry.filename]) continue;
+                while(this._onDemandExtracting) {
+                    await new Promise(r => setTimeout(r, 150));
+                    if(token !== this._albumCacheToken) return;
+                }
                 try {
                     const blob = await entry.getData(new zip.BlobWriter());
                     if(token !== this._albumCacheToken) return;
@@ -873,7 +897,21 @@ document.addEventListener('alpine:init', () => {
                     url = f.url;
                 } else {
                     const cached = (f.entry && this._trackCache) ? this._trackCache[f.entry.filename] : null;
-                    const b = f.blob || cached || await f.entry.getData(new zip.BlobWriter());
+                    let b = f.blob || cached;
+                    if(!b) {
+                        // タップされたトラックを最優先で展開する (裏のキャッシュ展開は一時停止)
+                        this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
+                        this.loading.show = true; this.loading.minimal = false;
+                        this.loading.text = 'トラック展開中...'; this.loading.progress = 0;
+                        try {
+                            b = await f.entry.getData(new zip.BlobWriter(), {
+                                onprogress: (done, total) => { if(total) this.loading.progress = done / total * 100; }
+                            });
+                        } finally {
+                            this._onDemandExtracting--;
+                            this.loading.show = false;
+                        }
+                    }
                     if(f.entry && this._trackCache && !this._trackCache[f.entry.filename]) this._trackCache[f.entry.filename] = b;
                     url = URL.createObjectURL(b);
                     this._trackUrl = url;
