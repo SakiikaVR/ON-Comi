@@ -3,8 +3,11 @@
 <p align="center"><img src="assets/icon.png" alt="オンコミ" width="128"></p>
 
 <p align="center">
-  <a href="https://github.com/SakiikaVR/ON-Comi/releases/latest/download/oncomi.apk">
-    <img src="https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20APK%E3%82%92%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-%E3%82%AA%E3%83%B3%E3%82%B3%E3%83%9F%20v2.0.0-7bb3d7?style=for-the-badge" alt="APKをダウンロード">
+  <a href="https://github.com/SakiikaVR/ON-Comi/releases/latest">
+    <img src="https://img.shields.io/github/v/release/SakiikaVR/ON-Comi?style=for-the-badge&label=%E2%AC%87%20APK&color=7bb3d7" alt="APKをダウンロード">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License">
   </a>
 </p>
 
@@ -57,9 +60,12 @@
 
 ## インストール（Android）
 
-上の**ダウンロードボタン**から `oncomi.apk` を端末に保存し、タップしてインストールしてください
+**[📦 最新リリース](https://github.com/SakiikaVR/ON-Comi/releases/latest)** から `ONComi-x.x.x.apk` を端末に保存し、タップしてインストールしてください
 （「提供元不明のアプリ」の許可が必要な場合があります）。
 起動後にホームの「フォルダを選択」で漫画・音声を入れたフォルダを選ぶだけで使えます。
+
+> v2.1.0 からビルドを [さきいかビルダー](https://github.com/SakiikaVR/Sakiika-Builder) に移行しました。
+> パッケージ名が変わったため、旧 (MedjedBuilder 版) APK とは別アプリとしてインストールされます。
 
 ## 使い方（ブラウザ）
 
@@ -73,25 +79,39 @@ python -m http.server 8000
 # → http://localhost:8000 を開く
 ```
 
-## Android アプリとしてビルド（MedjedBuilder）
+## Android アプリとしてビルド（さきいかビルダー）
 
-このフォルダは [MedjedBuilder](https://github.com/Xenoah/MedjedBuilder) でそのまま署名済み APK / AAB にビルドできます。
-ライブラリはすべて `lib/` に同梱済みのため、インターネット権限は不要です。
+このリポジトリは [さきいかビルダー](https://github.com/SakiikaVR/Sakiika-Builder) の CLI と
+同梱の [sakiika.json](sakiika.json) でそのまま署名済み APK にビルドできます。
+ライブラリはすべて `lib/` に同梱済みのため、**インターネット権限は不要**です。
 
-1. `MedjedBuilder.exe` を起動し、HTML フォルダにこのリポジトリのルートを指定
-2. 推奨設定:
-   - アプリ名: `オンコミ`
-   - パッケージID: 例 `jp.oncomi.app`
-   - 開始ページ: `index.html`
-   - アイコン: `assets/icon.png`
-   - ステータスバー色 / ナビゲーションバー色: `#000000`
-   - **ストレージモード: ユーザー選択フォルダ（SAF）** ← フォルダ自動ライブラリに必須
-   - JavaScript ファイル API: ON
-   - インターネット / HTTP 通信: 不要（OFF のまま）
-   - 起動スプラッシュを表示しない: ON（MedjedBuilder v0.2.0 以降。ダークテーマのまま瞬時に起動します）
-3. 出力先を選んで「APKをビルド」
+```powershell
+# web ファイルをステージング (www/ は .gitignore 済み)
+New-Item -ItemType Directory -Force www\css, www\js, www\lib, www\assets | Out-Null
+Copy-Item index.html, credit.html www\
+Copy-Item css\* www\css\; Copy-Item js\* www\js\; Copy-Item lib\* www\lib\
+Copy-Item assets\icon.png www\assets\
 
-詳細な手順・設定表は [BUILD_APK.md](BUILD_APK.md) を参照してください。MedjedBuilder は v0.2.7 以降を推奨します。
+sakiika build .\sakiika.json
+```
+
+主な設定（sakiika.json に設定済み）:
+
+| 設定 | 値 | 意味 |
+|---|---|---|
+| `fileAccess` | `folder_pick` | ユーザーが選んだフォルダ（SAF）— **フォルダ自動ライブラリに必須** |
+| `permissions` | なし | 通信・カメラ等は一切使いません |
+| `bridge.enableReflection` | `true` | ZIP のランダムアクセス読み出しのフォールバックに使用 |
+| `webview.htmlFileInput` | `true` | ブラウザ版と同じファイル取り込みにも対応 |
+
+MedjedBuilder の H2A ブリッジに依存していたフォルダアクセス・ZIP ランダムアクセスは、
+互換レイヤー [js/h2a-shim.js](js/h2a-shim.js) がさきいかビルダーのブリッジ (`Android.fs` / `Android.reflect`) へ
+そのまま接続します（`app.js` は無改変）。ブラウザで開いたときはこのシムは何もしません。
+
+詳細な手順は [BUILD_APK.md](BUILD_APK.md) を参照してください。
+
+> 署名鍵 `sakiika-key.pem` は出力フォルダーに作られます。**Android は同じ証明書でないと上書き更新を
+> 受け付けないため、この鍵は必ず保管してください**（このリポジトリには含めていません）。
 
 アプリ起動後にホームの「フォルダを選択」から漫画・音声を入れたフォルダを選ぶと、以後は起動のたびに自動でスキャンされます。
 
@@ -116,13 +136,15 @@ python -m http.server 8000
 ## ファイル構成
 
 ```
-├── index.html      # マークアップ
-├── css/style.css   # スタイル
-├── js/app.js       # アプリケーションロジック
-├── lib/            # 同梱ライブラリ（オフライン動作用）
-├── assets/icon.png # アプリアイコン
-├── credit.html     # サードパーティライセンス表記
-├── LICENSE         # 本体ライセンス (MIT)
+├── index.html       # マークアップ
+├── css/style.css    # スタイル
+├── js/app.js        # アプリケーションロジック
+├── js/h2a-shim.js   # さきいかビルダー用ブリッジ互換レイヤー
+├── lib/             # 同梱ライブラリ（オフライン動作用）
+├── assets/icon.png  # アプリアイコン
+├── credit.html      # サードパーティライセンス表記
+├── sakiika.json     # さきいかビルダーのビルド設定 (Android 版)
+├── LICENSE          # 本体ライセンス (MIT)
 └── README.md
 ```
 

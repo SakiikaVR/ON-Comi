@@ -1,91 +1,68 @@
-# APK ビルド手順 (MedjedBuilder -メジェドビルダー-)
+# Android APK のビルド手順（さきいかビルダー）
 
-このフォルダは [MedjedBuilder -メジェドビルダー-](https://github.com/Xenoah/MedjedBuilder) でそのまま APK 化できるプロジェクトです。
-すべての JavaScript ライブラリは `lib/` にローカル同梱済みのため、**インターネット権限なし・完全オフライン**で動作します。
+オンコミは [さきいかビルダー](https://github.com/SakiikaVR/Sakiika-Builder) で署名済み APK にビルドします。
+Java・Android SDK・Gradle は不要で、ビルドは数十ミリ秒で終わります。
+
+> v2.0.x までは MedjedBuilder を使用していました。v2.1.0 からさきいかビルダーへ移行しています。
+> 旧ビルド手順が必要な場合はタグ `v2.0.0` の BUILD_APK.md を参照してください。
 
 ## アプリの仕様
 
-- 従来の「＋ボタンでファイルをインポートする」方式は廃止しました。
-- 初回起動時に **本(PDF/ZIP/CBZ)や音声/動画を入れたフォルダを選択**すると、
-  そのフォルダ内(サブフォルダ4階層まで)のファイルが自動でライブラリに並びます。
+- 初回起動時に **本 (PDF/ZIP/CBZ) や音声/動画を入れたフォルダを選択**すると、
+  そのフォルダ内 (サブフォルダ数階層まで) のファイルが自動でライブラリに並びます。
 - ファイルの追加・削除はフォルダに直接行い、ホーム右上の「再スキャン」で反映されます。
-- サムネイルと PDF の変換結果はアプリ内キャッシュ(IndexedDB)に保存され、2回目以降は高速に開きます。
+- サムネイルと PDF の変換結果はアプリ内キャッシュ (IndexedDB) に保存され、2回目以降は高速に開きます。
 
-## ビルド手順 (かんたん: プロジェクトファイルを読み込む)
+## 必要なもの
 
-1. [リリースページ](https://github.com/Xenoah/MedjedBuilder/releases) から `MedjedBuilder-Windows-x64.zip` をダウンロード・展開し、`MedjedBuilder.exe` を起動する。
-2. 「プロジェクトを開く」で同梱の **`media-library.h2aproj`** を読み込む。
-   - HTMLフォルダ(このフォルダ)・ストレージモード「選択フォルダ(SAF)」・ファイルAPI ON など、
-     必要な設定がすべて入った状態になります。
-   - 出力先は `C:\Users\taket\Desktop\MediaLibrary.apk` に設定済み(変更可)。
-   - フォルダを移動した場合は「HTMLフォルダ」を選び直してください。
-3. アプリ名・パッケージID・アイコンを好みに変更し、「APKをビルド」を押す。
+- Windows PC
+- [さきいかビルダー v0.2.1 以降](https://github.com/SakiikaVR/Sakiika-Builder/releases/latest) の CLI (`sakiika-cli-Windows-x64.zip`)
 
-## ビルド手順 (手動で設定する場合)
+## 手順
 
-1. `MedjedBuilder.exe` を起動する。
-2. 「HTMLフォルダ」に **このフォルダ (`oncomi`)** を選択する (`index.html` が直下にあること)。
-3. 以下のとおり設定する。
+```powershell
+git clone https://github.com/SakiikaVR/ON-Comi.git
+cd ON-Comi
 
-| 設定項目 | 値 | 備考 |
+# 1. web ファイルをステージング (www/ は .gitignore 済み)
+New-Item -ItemType Directory -Force www\css, www\js, www\lib, www\assets | Out-Null
+Copy-Item index.html, credit.html www\
+Copy-Item css\* www\css\
+Copy-Item js\* www\js\
+Copy-Item lib\* www\lib\
+Copy-Item assets\icon.png www\assets\
+
+# 2. ビルド (設定はリポジトリ同梱の sakiika.json)
+sakiika build .\sakiika.json
+```
+
+`sakiika-out\オンコミ-x.x.x.apk` が生成されます。
+
+## 設定のポイント（sakiika.json 設定済み）
+
+| 設定 | 値 | 理由 |
 |---|---|---|
-| アプリ名 | Media Library (任意) | |
-| パッケージID | 任意 (例: `io.example.medialibrary`) | 更新時は同じIDと署名鍵が必要 |
-| 開始ページ | `index.html` | |
-| 画面向き | 自動 | |
-| **ストレージモード** | **選択フォルダ (SAF)** | **必須。** これ以外ではフォルダ読み込みが動きません |
-| **ファイルAPI** | **ON** | **必須。** `window.H2A` ブリッジを使用します |
-| インターネット | OFF | ライブラリ同梱済みのため不要 |
-| カメラ / マイク / 位置情報 / 通知 | OFF | 使用しません |
-| HTTP通信許可 | OFF | |
+| `fileAccess` | `folder_pick` | ユーザーが選んだフォルダ（SAF）。**フォルダ自動ライブラリに必須** |
+| `permissions` | `[]` | 完全オフライン。通信・カメラ・マイク等は使いません |
+| `bridge.enableReflection` | `true` | ZIP ランダムアクセス読み出しのフォールバック（h2a-shim.js が使用） |
+| `webview.htmlFileInput` | `true` | ブラウザ版と同じ `<input type="file">` 取り込みに対応 |
+| `webview.allowUniversalFileAccess` | `true` | `file://` ページから content URI (選択フォルダ内ファイル) を読むために必要 |
+| `theme` / 背景 | dark / `#000000` | ダークデザイン固定。起動時からダークテーマ |
+| `splash.enabled` | `false` | スプラッシュなしで瞬時に起動 |
 
-対応する `app.json` のイメージ:
+## MedjedBuilder からの移行について
 
-```json
-{
-  "app_name": "Media Library",
-  "package_id": "io.example.medialibrary",
-  "start_page": "index.html",
-  "orientation": "auto",
-  "storage": "saf",
-  "file_api": true,
-  "internet": false
-}
-```
+アプリ本体 (`js/app.js`) は MedjedBuilder の H2A ブリッジ API（フォルダ一覧・ZIP ランダムアクセス・
+content URI 再生など）を呼び出します。さきいかビルダー版では互換レイヤー
+[js/h2a-shim.js](js/h2a-shim.js) が同じ API をさきいかのブリッジ (`Android.fs` / `Android.reflect`) の上に
+再現するため、**app.js は無改変**です。
 
-4. 出力先を選んで「APKをビルド」を押す。
-5. 生成された APK を Android 8.0 以降の端末にインストールする。
+- 提供: `requestStorage` / `list` / `exists` / `remove` / `toUrl` / `openRandom` / `readRandom` / `closeRandom`
+- 非提供: `extractZip*` / `copyIn`（ネイティブ ZIP 展開キャッシュ）→ app.js が capability を確認して
+  zip.js による JS 展開へ自動フォールバックします（音声アルバムの初回再生がわずかに遅くなるのみ）
 
-> **署名鍵の注意:** 初回ビルドで生成される鍵 (通常「ドキュメント/Html2Apk/keys」) は
-> アプリ更新に必須です。紛失すると同じパッケージIDで上書きインストールできなくなります。
+## 署名鍵について
 
-## 動作確認 (PC ブラウザ)
-
-APK 化せずに Chrome / Edge でも動作確認できます (File System Access API を使用)。
-
-```
-cd oncomi
-python -m http.server 8000
-```
-
-ブラウザで `http://localhost:8000` を開き、「フォルダを選択」からテスト用フォルダを選びます。
-
-## 対応ファイル
-
-| 種類 | 拡張子 |
-|---|---|
-| 漫画・本 | `.pdf` `.zip` `.cbz` (画像入りアーカイブ) |
-| 音声アルバム | `.zip` (音声/動画入りアーカイブ。中身で自動判別) |
-| 単体メディア | `.mp3` `.wav` `.ogg` `.m4a` `.flac` `.aac` `.mp4` `.webm` `.m4v` |
-
-## 動作の仕組み(パフォーマンス)
-
-- ZIP はランダムアクセスで「目次」と「表示中のページ(前後2ページ先読み)」だけを読み込むため、
-  数百MB のファイルでも高速に開き、メモリ使用量も一定です。ストレージへの展開は行いません。
-- 端末に保存されるキャッシュはサムネイルと PDF の変換結果のみです。
-- PDF は初回のみ画像へ変換し(進捗表示あり)、以後はキャッシュから即座に開きます。
-
-## 既知の制限
-
-- 編集(タイトル・作者・表紙)はアプリ内メタデータのみ変更し、元ファイルには書き込みません。
-- 選択モードからの「削除」は**フォルダ内の実ファイルを削除**します(確認ダイアログあり)。
+初回ビルドで `sakiika-out\sakiika-key.pem` が生成され、以後のビルドで再利用されます。
+**Android は同じ証明書でないと上書き更新を受け付けないため、この鍵は必ず保管してください**
+（このリポジトリには含めていません）。

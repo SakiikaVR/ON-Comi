@@ -1,0 +1,52 @@
+{
+  "appName": "オンコミ",
+  "packageName": "com.sakiikavr.oncomi",
+  "versionName": "2.1.0",
+  "versionCode": 3,
+  "webRoot": "www",
+  "entry": "index.html",
+  "outputFormat": "apk",
+  "minSdk": 28,
+  "targetSdk": 34,
+  "orientation": "sensor",
+  "theme": "dark",
+  "fullscreen": false,
+  "splash": {
+    "enabled": false,
+    "background": "#000000"
+  },
+  "lightBackground": "#000000",
+  "darkBackground": "#000000",
+  "iconPng": "assets/icon.png",
+  "iconBackground": "#000000",
+  "permissions": [],
+  "fileAccess": "folder_pick",
+  "webview": {
+    "javascriptEnabled": true,
+    "domStorage": true,
+    "database": true,
+    "allowUniversalFileAccess": true,
+    "mixedContent": false,
+    "zoom": false,
+    "mediaPlaybackRequiresGesture": false,
+    "debuggable": false,
+    "userAgentSuffix": "",
+    "externalLinksInBrowser": true,
+    "backNavigatesHistory": false,
+    "pullToRefresh": false,
+    "htmlFileInput": true,
+    "allowMediaCapture": false,
+    "allowGeolocation": false
+  },
+  "bridge": {
+    "globalName": "Android",
+    "enableReflection": true,
+    "modules": [],
+    "traceCalls": false
+  },
+  "signing": {
+    "key": "sakiika-out/sakiika-key.pem"
+  },
+  "outputDir": "sakiika-out",
+  "release": true
+}
