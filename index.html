@@ -1,22 +1,22 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#000000">
+    <meta name="theme-color" content="#f9f9fb">
     <title>オンコミ</title>
     <link rel="icon" href="assets/icon.png">
     <script>
     /* 保存済みテーマを最初の描画前に適用 (起動時の配色フラッシュ防止)。
-       本適用は app.js の applyTheme() が行う。 */
+       既定はライト + オレンジ。本適用は app.js の applyTheme() が行う。 */
     (function(){try{
         var s=JSON.parse(localStorage.getItem('appSettings')||'{}');
-        if(s.theme==='light'){
-            document.documentElement.setAttribute('data-theme','light');
+        if(s.theme==='dark'){
+            document.documentElement.setAttribute('data-theme','dark');
             var m=document.querySelector('meta[name="theme-color"]');
-            if(m)m.setAttribute('content','#f9f9fb');
+            if(m)m.setAttribute('content','#000000');
         }
-        if(s.accentColor)document.documentElement.style.setProperty('--primary-color',s.accentColor);
+        document.documentElement.style.setProperty('--primary-color',s.accentColor||'#ff9f0a');
     }catch(e){}})();
     </script>
 

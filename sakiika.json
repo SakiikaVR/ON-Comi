@@ -1,8 +1,8 @@
 {
   "appName": "オンコミ",
   "packageName": "com.sakiikavr.oncomi",
-  "versionName": "2.6.0",
-  "versionCode": 9,
+  "versionName": "2.7.0",
+  "versionCode": 10,
   "webRoot": "www",
   "entry": "index.html",
   "outputFormat": "apk",
@@ -18,7 +18,7 @@
   "lightBackground": "#f9f9fb",
   "darkBackground": "#000000",
   "iconPng": "assets/icon.png",
-  "iconBackground": "#000000",
+  "iconBackground": "#f9f9fb",
   "permissions": [],
   "fileAccess": "folder_pick",
   "webview": {

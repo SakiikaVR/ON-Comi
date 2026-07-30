@@ -341,7 +341,7 @@ function toRomaji(str) {
 document.addEventListener('alpine:init', () => {
     Alpine.data('app', () => ({
         page: 'home', library: [], lists: [],
-        settings: { theme:'dark', thumbSize:'small', accentColor:'#7bb3d7', showAdult:true, scrollMode:'horizontal', direction:'rtl', doublePage:false, resume:true },
+        settings: { theme:'light', thumbSize:'small', accentColor:'#ff9f0a', showAdult:true, scrollMode:'horizontal', direction:'rtl', doublePage:false, resume:true },
         filter:'all', searchQuery:'', selectionMode:false, selectedIds:[],
         loading:{show:false, text:'', progress:0, subText:'', minimal:false}, toast:{show:false, message:''},
         showAddMenu:false, showViewerMenu:false, showBookmarksModal:false, showListSelect:false,
@@ -522,7 +522,32 @@ document.addEventListener('alpine:init', () => {
 
         async loadThumb(id) {
             if(this.thumbnails[id]) return;
-            try { const blob = await db.files.get(id+'_thumb'); if(blob) this.thumbnails[id] = URL.createObjectURL(blob); } catch(e) {}
+            try { const blob = await db.files.get(id+'_thumb'); if(blob) { this.thumbnails[id] = URL.createObjectURL(blob); return; } } catch(e) {}
+            // 初めて画面に表示されたときにサムネイルを生成し、以後は保存済みキャッシュから読む
+            const item = _.find(this.library, {id});
+            if(item && item.path && !item.indexed) this.queueIndexItem(item);
+        },
+        queueIndexItem(item) {
+            this._indexQueue = this._indexQueue || [];
+            if(this._indexQueue.some(i => i.id === item.id)) return;
+            this._indexQueue.push(item);
+            this.pumpIndexQueue();
+        },
+        async pumpIndexQueue() {
+            if(this._indexing) return;
+            this._indexing = true;
+            while(this._indexQueue && this._indexQueue.length) {
+                const item = this._indexQueue.shift();
+                if(item.indexed) continue;
+                try { await this.indexFolderItem(item); }
+                catch(e) { console.error('index error:', item.path, e); item.indexed = true; }
+                this.saveMeta();
+                if(item.hasThumb && !this.thumbnails[item.id]) {
+                    try { const blob = await db.files.get(item.id+'_thumb'); if(blob) this.thumbnails[item.id] = URL.createObjectURL(blob); } catch(e) {}
+                }
+                await new Promise(r => setTimeout(r, 30));
+            }
+            this._indexing = false;
         },
 
         /* ===== ライブラリフォルダ (さきいかビルダー / SAF) ===== */
@@ -581,7 +606,7 @@ document.addEventListener('alpine:init', () => {
                 });
                 this.library = keep.concat(items);
                 this.saveMeta();
-                this.processIndexQueue();
+                // サムネイル生成は起動時には行わず、作品が初めて画面に表示されたときに行う (loadThumb 参照)
             } catch(e) { console.error(e); this.showToast('フォルダを読み込めませんでした'); }
             this.folderScanning = false;
         },
@@ -596,18 +621,6 @@ document.addEventListener('alpine:init', () => {
             }
         },
         // 新規ファイルの種別判定とサムネイル生成をバックグラウンドで順次行う
-        async processIndexQueue() {
-            if(this._indexing) return;
-            this._indexing = true;
-            for(const item of this.library) {
-                if(!item.path || item.indexed) continue;
-                try { await this.indexFolderItem(item); }
-                catch(e) { console.error('index error:', item.path, e); item.indexed = true; }
-                this.saveMeta();
-                await new Promise(r => setTimeout(r, 30));
-            }
-            this._indexing = false;
-        },
         async indexFolderItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
             if(!['zip','cbz'].includes(ext)) { item.indexed = true; return; }
@@ -674,7 +687,11 @@ document.addEventListener('alpine:init', () => {
                 const r = new zip.ZipReader(src, { filenameEncoding: 'shift-jis' });
                 const es = await r.getEntries();
                 this._openSrcReader = src;
-                if(item.type === 'book') {
+                // 未インデックスでも正しく開けるよう、中身から種別を確定する
+                const hasMedia = es.some(x => !x.directory && MEDIA_REGEX.test(x.filename));
+                const kind = hasMedia ? 'audio' : 'book';
+                if(item.type !== kind) { item.type = kind; this.saveMeta(); }
+                if(kind === 'book') {
                     src.startPrefetch();   // 漫画はランダムアクセスが主なので全体 Blob 化が最速
                     const imgs = _.filter(es, x => !x.directory && x.filename.match(IMG_REGEX))
                         .sort((a,b) => a.filename.localeCompare(b.filename, undefined, {numeric:true}));
@@ -974,19 +991,32 @@ document.addEventListener('alpine:init', () => {
                 e => !e.directory && MEDIA_REGEX.test(e.filename) && !VIDEO_REGEX.test(e.filename));
             this._trackCache = {};
             if(entries.length === 0) return;
-            for(const entry of entries) {
+            const remaining = new Map(entries.map(e => [e.filename, e]));
+            while(remaining.size) {
                 if(token !== this._albumCacheToken) return;
-                if(this._trackCache[entry.filename]) continue;
                 while(this._onDemandExtracting) {
                     await new Promise(r => setTimeout(r, 150));
                     if(token !== this._albumCacheToken) return;
                 }
+                // 次に再生されそうなトラックを優先し、それ以外は表示順に展開する
+                let entry = (this._cachePriority && remaining.get(this._cachePriority)) || remaining.values().next().value;
+                remaining.delete(entry.filename);
+                if(this._trackCache[entry.filename]) continue;
                 try {
                     const blob = await entry.getData(new zip.BlobWriter());
                     if(token !== this._albumCacheToken) return;
                     this._trackCache[entry.filename] = blob;
                 } catch(e) {}
             }
+        },
+        // 「次に再生されそうなトラック」= プレイリスト上の次曲を裏キャッシュの優先対象にする
+        setNextCachePriority() {
+            this._cachePriority = null;
+            if(!this.playlist || this.playlist.length < 2) return;
+            const idx = _.findIndex(this.playlist, {full: this.currentTrack});
+            if(idx < 0) return;
+            const nxt = this.playlist[(idx + 1) % this.playlist.length];
+            if(nxt && nxt.entry) this._cachePriority = nxt.entry.filename;
         },
         // WAV ストリーミング再生の開始: 先頭ブロックの展開完了で部分Blobを返し、
         // 残りは裏で展開を続けて完了後に _pendingFullSwap へ積む
@@ -995,22 +1025,21 @@ document.addEventListener('alpine:init', () => {
             const entry = f.entry;
             const token = this._albumCacheToken || 0;
             this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
-            this.loading.show = true; this.loading.minimal = false;
-            this.loading.text = 'トラック展開中...'; this.loading.progress = 0;
             let headResolve;
             const headPromise = new Promise(res => { headResolve = res; });
             const run = extractEntryProgressive(reader, entry, {
                 headBytes: 12 * 1024 * 1024,
-                isAlive: () => (this._albumCacheToken || 0) === token && this._openSrcReader === reader,
+                // アルバムが閉じられたか、別トラックへ移ったら展開を中断する (多重展開の暴走防止)
+                isAlive: () => (this._albumCacheToken || 0) === token
+                    && this._openSrcReader === reader && this._playTarget === f.full,
                 onHead: (blob, wavMeta) => {
-                    if(blob.size < entry.uncompressedSize) {
+                    if(this._playTarget === f.full && blob.size < entry.uncompressedSize) {
                         let coverage = 0;
                         if(wavMeta && wavMeta.byteRate) coverage = Math.max(0, (blob.size - wavMeta.dataOffset) / wavMeta.byteRate);
                         this._partialInfo = { full: f.full, coverage };
                     }
                     headResolve(blob);
-                },
-                onProgress: (done, total) => { if(total) this.loading.progress = done / total * 100; }
+                }
             });
             run.then((fullBlob) => {
                 if(this._trackCache && (this._albumCacheToken || 0) === token) this._trackCache[entry.filename] = fullBlob;
@@ -1018,14 +1047,11 @@ document.addEventListener('alpine:init', () => {
                     this._pendingFullSwap = { full: f.full, f };
                     if(this._awaitFullResume) {
                         this._awaitFullResume = false;
-                        this.loading.show = false;
                         this.maybeSwapToFull(this._partialInfo.coverage || null);
                     }
                 }
             }).catch(() => {}).finally(() => { this._onDemandExtracting--; });
-            try {
-                return await Promise.race([headPromise, run]);
-            } finally { this.loading.show = false; }
+            return await Promise.race([headPromise, run]);
         },
         // 全体版が揃っていれば現在位置を引き継いで差し替える
         maybeSwapToFull(targetTime) {
@@ -1046,12 +1072,16 @@ document.addEventListener('alpine:init', () => {
             if(f.type === 'text') { this.viewText(f); return; }
             if(f.type === 'file_video') { this.playVideo(f); return; }
 
+            // 連打・自動送りの追い越し対策: 最新の再生要求だけが Howl を作れる
+            const playToken = this._playToken = (this._playToken || 0) + 1;
+            this._playTarget = f.full;
+
             if(this.currentHowl) { this.currentHowl.unload(); this.currentHowl = null; }
             if(this._trackUrl) { URL.revokeObjectURL(this._trackUrl); this._trackUrl = null; }
             // 別トラックへ移るときはプログレッシブ再生の状態を破棄 (差し替え再入時は同一トラックなので保持)
             if(this.currentTrack !== f.full) {
                 this._partialInfo = null; this._pendingFullSwap = null; this._resumeAt = null;
-                if(this._awaitFullResume) { this._awaitFullResume = false; this.loading.show = false; }
+                this._awaitFullResume = false;
             }
             let url;
             try {
@@ -1067,19 +1097,15 @@ document.addEventListener('alpine:init', () => {
                         // 残りは同じストリームで裏展開 → 完了後に自然なタイミングで全体版へ差し替える
                         b = await this.startProgressiveTrack(f);
                     } else if(!b) {
-                        // タップされたトラックを最優先で展開する (裏のキャッシュ展開は一時停止)
+                        // タップされたトラックを最優先で展開する (裏のキャッシュ展開は一時停止・画面は塞がない)
                         this._onDemandExtracting = (this._onDemandExtracting || 0) + 1;
-                        this.loading.show = true; this.loading.minimal = false;
-                        this.loading.text = 'トラック展開中...'; this.loading.progress = 0;
                         try {
-                            b = await f.entry.getData(new zip.BlobWriter(), {
-                                onprogress: (done, total) => { if(total) this.loading.progress = done / total * 100; }
-                            });
+                            b = await f.entry.getData(new zip.BlobWriter());
                         } finally {
                             this._onDemandExtracting--;
-                            this.loading.show = false;
                         }
                     }
+                    if(playToken !== this._playToken) return;   // 展開中に別トラックへ移った
                     if(f.entry && this._trackCache && !this._partialInfo && !this._trackCache[f.entry.filename]) this._trackCache[f.entry.filename] = b;
                     url = URL.createObjectURL(b);
                     this._trackUrl = url;
@@ -1089,6 +1115,7 @@ document.addEventListener('alpine:init', () => {
                 this.showToast('再生できません。アルバムを開き直してください');
                 return;
             }
+            if(playToken !== this._playToken) return;   // 追い越された再生要求は破棄
             const ext = f.name.split('.').pop().toLowerCase();
             this.currentTrack = f.full;
             this.currentTrackName = f.name.replace(/\.[^.]+$/, '');
@@ -1101,17 +1128,18 @@ document.addEventListener('alpine:init', () => {
                     if(this._resumeAt != null) { const at = this._resumeAt; this._resumeAt = null; this.currentHowl.seek(at); }
                     this.audioDuration = this.currentHowl.duration();
                     this.updateMediaSession();
+                    this.setNextCachePriority();
                     this.startStep();
                 },
                 onpause: () => this.playing = false,
                 onend: () => {
                     if(this._partialInfo && this._partialInfo.full === this.currentTrack) {
-                        // 部分データの終端に到達: 全体版が用意でき次第そこから再開する
+                        // 部分データの終端に到達: 全体版が用意でき次第そこから再開する (画面は塞がない)
                         const at = this._partialInfo.coverage || (this.currentHowl ? (this.currentHowl.seek() || 0) : 0);
                         if(this.maybeSwapToFull(at)) return;
                         this._awaitFullResume = true;
                         this.playing = false;
-                        this.loading.show = true; this.loading.minimal = true; this.loading.text = '';
+                        this.showToast('続きを展開中...');
                         return;
                     }
                     if(this.repeatMode === 2) { this.currentHowl.play(); }
