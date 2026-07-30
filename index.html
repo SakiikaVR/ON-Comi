@@ -90,7 +90,7 @@
                 <div class="action-sheet-title" x-show="sheetData.title" x-text="sheetData.title"></div>
                 <template x-for="(a, i) in sheetData.actions" :key="i">
                     <button class="action-sheet-btn" :class="{'danger': a.danger, 'active': a.active}" @click="runSheetAction(a)">
-                        <span x-text="a.label"></span><span class="sheet-check" x-show="a.active">✓</span>
+                        <span x-text="a.label"></span><span class="sheet-check" x-show="a.active"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></span>
                     </button>
                 </template>
             </div>
@@ -101,7 +101,7 @@
     </div>
 
     <div id="video-modal" x-show="videoPlayer.show" x-cloak>
-        <div class="video-close" @click="closeVideo()">✕</div>
+        <div class="video-close" @click="closeVideo()"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></div>
         <video id="main-video" x-ref="videoRef" controls autoplay playsinline @ended="onVideoEnded"></video>
     </div>
 
@@ -185,7 +185,7 @@
                         <template x-if="!item.hasThumb"><div x-html="ICONS[item.type==='book'?'book':'audio']" style="opacity:0.5; color:var(--icon-color);"></div></template>
                         <div class="adult-badge" x-show="item.isAdult">R18</div>
                     </div>
-                    <div class="selection-check" x-show="selectedIds.includes(item.id)">✓</div>
+                    <div class="selection-check" x-show="selectedIds.includes(item.id)"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
                     <div class="item-info">
                         <div class="item-title" x-text="item.title"></div>
                         <div class="item-author" x-text="item.author"></div>
@@ -197,7 +197,7 @@
 
     <div id="edit-modal" class="modal-overlay" x-show="editModal.show" x-cloak>
         <div class="modal-content">
-            <div class="modal-header"><span x-text="editModal.isBatch ? '一括編集 ('+selectedIds.length+'件)' : '編集'"></span><button @click="editModal.show=false">✕</button></div>
+            <div class="modal-header"><span x-text="editModal.isBatch ? '一括編集 ('+selectedIds.length+'件)' : '編集'"></span><button @click="editModal.show=false"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
             <div class="modal-body">
                 <div class="form-group" x-show="!editModal.isBatch">
                     <label>タイトル</label>
@@ -242,7 +242,7 @@
 
     <div id="cover-selector-modal" class="modal-overlay" x-show="coverSelector.show" x-cloak>
         <div class="modal-content" style="height: 80vh;">
-            <div class="modal-header">表紙を選択<button @click="coverSelector.show=false">✕</button></div>
+            <div class="modal-header">表紙を選択<button @click="coverSelector.show=false"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
             <div style="flex:1; overflow-y:auto; padding:5px;">
                 <div x-show="coverSelector.loading" style="text-align:center; padding:20px;">読み込み中...</div>
                 <template x-for="file in coverSelector.images">
@@ -295,7 +295,7 @@
                 </div>
                 <div class="progress-container">
                     <span x-text="fmtTime(audioTime)">0:00</span>
-                    <input type="range" id="seek-bar" :value="sliderTime" :max="audioDuration || 1"
+                    <input type="range" id="seek-bar" step="any" :value="sliderTime" :max="audioDuration || 1"
                            :style="'--p:'+(audioDuration ? (sliderTime/audioDuration*100) : 0)+'%'"
                            @input="isDragging=true; sliderTime=$event.target.value" @change="seekAudio($event.target.value)">
                     <span x-text="fmtTime(audioDuration)">0:00</span>
@@ -369,7 +369,7 @@
                          <template x-if="!item.hasThumb"><div x-html="ICONS[item.type==='book'?'book':'audio']" style="opacity:0.5; color:var(--icon-color);"></div></template>
                          <div class="adult-badge" x-show="item.isAdult">R18</div>
                      </div>
-                     <div class="selection-check" x-show="selectedIds.includes(item.id)">✓</div>
+                     <div class="selection-check" x-show="selectedIds.includes(item.id)"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
                      <div class="item-info">
                          <div class="item-title" x-text="item.title"></div>
                          <div class="item-author" x-text="item.author"></div>
@@ -379,7 +379,7 @@
             <div class="empty-library" x-show="getListItems().length===0">
                 <div x-html="ICONS.folder"></div>
                 <p>リストに作品がありません</p>
-                <span>ホームで作品を長押し →「リストへ」で追加できます</span>
+                <span>ホームで作品を長押し <svg viewBox="0 0 24 24" style="width:1em;height:1em;display:inline-block;vertical-align:-0.15em;" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>「リストへ」で追加できます</span>
             </div>
         </div>
     </div>
@@ -435,13 +435,13 @@
     </div>
     <div id="bookmarks-modal" class="modal-overlay" x-show="showBookmarksModal" @click="showBookmarksModal=false">
         <div class="modal-content" style="max-height:50vh;">
-            <div class="modal-header">しおり<button @click="showBookmarksModal=false">✕</button></div>
+            <div class="modal-header">しおり<button @click="showBookmarksModal=false"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
             <template x-for="p in currentItem?.bookmarks"><div class="list-option" x-text="(p+1)+' ページ'" @click="jumpTo(p)"></div></template>
         </div>
     </div>
     <div id="list-select-modal" class="modal-overlay" x-show="showListSelect" x-cloak @click="showListSelect=false">
         <div class="modal-content" @click.stop>
-            <div class="modal-header">リストに追加<button @click="showListSelect=false">✕</button></div>
+            <div class="modal-header">リストに追加<button @click="showListSelect=false"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
             <template x-for="l in lists" :key="l.id">
                 <div class="list-option" @click="addSelectedToList(l)">
                     <div x-html="ICONS.folder" style="color:var(--folder-color); display:flex;"></div>
@@ -457,7 +457,7 @@
 
     <div id="text-viewer-modal" class="modal-overlay" x-show="textViewer.show" @click="textViewer.show=false" x-transition.opacity>
         <div class="modal-content" @click.stop style="width:90%; max-width:600px; height:80vh;">
-            <div class="modal-header"><span x-text="textViewer.title"></span><button @click="textViewer.show=false">✕</button></div>
+            <div class="modal-header"><span x-text="textViewer.title"></span><button @click="textViewer.show=false"><svg viewBox="0 0 24 24" style="width:1em;height:1em;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
             <div style="flex:1; overflow-y:auto; padding:5px;"><div id="text-content" x-text="textViewer.content"></div></div>
         </div>
     </div>

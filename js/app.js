@@ -623,6 +623,19 @@ document.addEventListener('alpine:init', () => {
         // 新規ファイルの種別判定とサムネイル生成をバックグラウンドで順次行う
         async indexFolderItem(item) {
             const ext = item.path.split('.').pop().toLowerCase();
+            if(ext === 'pdf') {
+                // PDF は 1 ページ目を描画してサムネイルにする
+                try {
+                    const blob = await this.readPathBlob(item.path, 'application/pdf');
+                    const pdf = await pdfjsLib.getDocument({ data: await blob.arrayBuffer() }).promise;
+                    const pageBlob = await this.renderPdfPage(pdf, 1);
+                    const small = await this.shrinkImage(pageBlob);
+                    await db.files.put(small, item.id + '_thumb');
+                    item.hasThumb = true;
+                    try { pdf.destroy(); } catch(e) {}
+                } catch(e) { console.error('pdf thumb error:', item.path, e); }
+                item.indexed = true; return;
+            }
             if(!['zip','cbz'].includes(ext)) { item.indexed = true; return; }
             // サムネイル作成は目次と先頭画像しか読まないため、全体の先読みはしない
             const src = new SakiikaRandomReader(item.path, { noPrefetch: true });
@@ -707,8 +720,6 @@ document.addEventListener('alpine:init', () => {
                 }
                 this.page = 'reels';
             } else if(ext === 'pdf') {
-                this.loading.minimal = false;
-                this.loading.text = 'PDF読み込み中...';
                 const blob = await this.readPathBlob(item.path, 'application/pdf');
                 const pdf = await pdfjsLib.getDocument({ data: await blob.arrayBuffer() }).promise;
                 this._openPdfDoc = pdf;
@@ -742,13 +753,7 @@ document.addEventListener('alpine:init', () => {
         async handleClick(item) { if(this.ignoreClick) return; if(this.selectionMode) { this.selectedIds = _.xor(this.selectedIds, [item.id]); } else { this.openItem(item); } },
         async openItem(item) {
             this.currentItem = item;
-
-            // 音声/動画は目次読みだけで開けるためオーバーレイを出さない。漫画のみ最小スピナー
-            if (item.type === 'book') {
-                this.loading.show = true;
-                this.loading.minimal = true;
-                this.loading.text = '';
-            }
+            // 作品を開くときの読み込み表示は出さない (目次読みだけで開けるため)
 
             try {
                 this._albumCacheToken = (this._albumCacheToken || 0) + 1;
@@ -1149,9 +1154,7 @@ document.addEventListener('alpine:init', () => {
                     if(f.url && f.path && !f._triedBlob) {
                         f._triedBlob = true;
                         try {
-                            this.loading.show = true; this.loading.minimal = false; this.loading.text = "読み込み中...";
                             const blob = await this.readPathBlob(f.path);
-                            this.loading.show = false;
                             this.playAudioFile(Object.assign({}, f, { url: null, blob }));
                             return;
                         } catch(e) { this.loading.show = false; }
